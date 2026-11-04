@@ -144,6 +144,9 @@ class CombosDygma : public kaleidoscope::Plugin {
   KeyAddr deferred_anchor_;
   Key     deferred_action_;
 
+  /* Anchor of a combo ended by another member. endCombo() already released its action, so its physical release is swallowed */
+  KeyAddr spent_anchor_;
+
   /* Re-entrancy guard. It must cover the WHOLE flush loop and mean "do not
    * buffer", not merely "do not consume": when the Qukeys queue fills up it
    * calls processQueue() synchronously from inside onKeyswitchEvent, which

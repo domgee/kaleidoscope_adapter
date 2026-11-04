@@ -435,6 +435,7 @@ void CombosDygma::endCombo(bool release_came_from_anchor)
   if (!release_came_from_anchor && anchor_.isValid())
   {
     state_ = State::IDLE;   /* stop owning the address before re-entering */
+    spent_anchor_ = anchor_;
     flushing_ = true;
     handleKeyswitchEvent(action_key_, anchor_, WAS_PRESSED);
     flushing_ = false;
@@ -527,6 +528,13 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
      * action a second time. */
     if (keyToggledOff(key_state))
     {
+      /* endCombo() already sent this action's release. Swallow the physical one so Superkeys and OneShot see one release */
+      if (key_addr == spent_anchor_ && !keyRoleManager.isReplayingQueuedEvent())
+      {
+        spent_anchor_ = KeyAddr();
+        return EventHandlerResult::EVENT_CONSUMED;
+      }
+
       return EventHandlerResult::OK;
     }
 
@@ -552,6 +560,11 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
     addrFlagSet(owned_, key_addr, false);
 
     if (key_addr == deferred_anchor_) deferred_anchor_ = KeyAddr();
+
+    if (key_addr == spent_anchor_)
+    {
+      spent_anchor_ = KeyAddr();
+    }
   }
 
   /* --- the idle requirement ------------------------------------------ */
@@ -917,6 +930,7 @@ void CombosDygma::resetVolatileState()
   last_press_ms_   = 0;
   has_prior_press_ = false;
   deferred_anchor_ = KeyAddr();
+  spent_anchor_    = KeyAddr();
 
   for (uint8_t i = 0; i < sizeof(flushed_); ++i)
   {
