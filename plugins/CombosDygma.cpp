@@ -372,6 +372,10 @@ void CombosDygma::activateCombo(uint8_t index, KeyAddr anchor)
   action_key_ = Key(combo.action);
   state_      = State::ACTIVE;
 
+  /* Keep the replay target for both firing paths. Qukeys may queue the action press of an immediate firing too */
+  deferred_anchor_ = anchor_;
+  deferred_action_ = action_key_;
+
   buffer_len_ = 0;
 
   /* Not optional. key_events.cpp cached the member's own key for this address
@@ -399,9 +403,6 @@ void CombosDygma::fireDeferred(uint8_t index)
   KeyAddr anchor = buffer_[buffer_len_ - 1].addr;
 
   activateCombo(index, anchor);
-
-  deferred_anchor_ = anchor_;
-  deferred_action_ = action_key_;
 
   flushing_ = true;
   handleKeyswitchEvent(action_key_, anchor_, IS_PRESSED);
@@ -528,11 +529,8 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
       return EventHandlerResult::OK;
     }
 
-    /* The one replayed toggle-on that must go through: the action press of a
-     * deferred combo that had already ended by the time Qukeys replayed it --
-     * a chord tapped faster than the match window. It is the only press of
-     * the action, so it is not a second firing; swallowing it would lose the
-     * combo entirely. Its release is already queued behind it. */
+    /* Let the Qukeys replay of the last combo's action press through. The combo ended before the replay arrived, and this is
+     * the only press of the action. Swallowing it would lose the combo. Its release is queued behind it */
     if (keyToggledOn(key_state) && keyRoleManager.isReplayingQueuedEvent() &&
         key_addr == deferred_anchor_)
     {

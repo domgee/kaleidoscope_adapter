@@ -139,10 +139,8 @@ class CombosDygma : public kaleidoscope::Plugin {
   KeyAddr anchor_;
   Key     action_key_;
 
-  /* The action press emitted by fireDeferred(), until Qukeys replays it. When
-   * a release resolves the chord, the combo fires and ends in the same cycle,
-   * so that replay arrives with the anchor already back under the `owned_`
-   * guard -- which would swallow it, and the chord would produce nothing. */
+  /* Action press of the last combo that fired, kept until Qukeys replays it. The combo may end before the replay
+   * arrives, and the `owned_` guard would then swallow it and lose the chord */
   KeyAddr deferred_anchor_;
   Key     deferred_action_;
 
