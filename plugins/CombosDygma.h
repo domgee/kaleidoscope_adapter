@@ -141,10 +141,18 @@ class CombosDygma : public kaleidoscope::Plugin {
   KeyAddr anchor_;
   Key     action_key_;
 
-  /* Action press of the last combo that fired, kept until Qukeys replays it. The combo may end before the replay
-   * arrives, and the `owned_` guard would then swallow it and lose the chord */
-  KeyAddr deferred_anchor_;
-  Key     deferred_action_;
+  /* Action presses of fired combos, kept until Qukeys replays them. A combo may end before its replay arrives, and the
+   * `owned_` guard would then swallow it and lose the chord. The Qukeys queue holds 8 events. Every ended combo there
+   * holds its press and its release and only the held combo lacks a release, so at most 4 presses are pending */
+  static constexpr uint8_t MAX_PENDING_REPLAYS = 4;
+
+  struct PendingReplay {
+    KeyAddr anchor;
+    Key     action;
+  };
+
+  PendingReplay pending_replays_[MAX_PENDING_REPLAYS];
+  uint8_t       pending_replays_len_ = 0;
 
   /* Re-entrancy guard. It must cover the WHOLE flush loop and mean "do not
    * buffer", not merely "do not consume": when the Qukeys queue fills up it
@@ -238,6 +246,11 @@ class CombosDygma : public kaleidoscope::Plugin {
   bool isActiveMember(KeyAddr key_addr) const;
   void endCombo(bool release_came_from_anchor);
   EventHandlerResult handleActiveMember(Key &mapped_key, KeyAddr key_addr, uint8_t key_state);
+
+  /* --- pending replays ------------------------------------------------ */
+
+  void addPendingReplay(KeyAddr anchor, Key action);
+  bool takePendingReplay(KeyAddr anchor, Key &action);
 
   /* Puts every piece of volatile state back to power-on values. A real reboot
    * gets this for free from static initialisation; doing it explicitly makes

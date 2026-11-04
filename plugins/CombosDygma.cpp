@@ -373,8 +373,7 @@ void CombosDygma::activateCombo(uint8_t index, KeyAddr anchor)
   state_      = State::ACTIVE;
 
   /* Keep the replay target for both firing paths. Qukeys may queue the action press of an immediate firing too */
-  deferred_anchor_ = anchor_;
-  deferred_action_ = action_key_;
+  addPendingReplay(anchor_, action_key_);
 
   buffer_len_ = 0;
 
@@ -396,9 +395,9 @@ void CombosDygma::activateCombo(uint8_t index, KeyAddr anchor)
  * as a real keypress, which is what the rewrite path guarantees as well.
  *
  * The anchor is the last member pressed, as in the immediate path. From here
- * on the scanner's holds of the anchor are rewritten in the ACTIVE branch, and
- * its release ends the combo, both exactly as if the combo had fired on the
- * anchor's own press. */
+ * on the scanner's holds of the anchor resolve through the live keymap, only
+ * its Qukeys replay is rewritten, and its release ends the combo, all exactly
+ * as if the combo had fired on the anchor's own press. */
 void CombosDygma::fireDeferred(uint8_t index)
 {
   KeyAddr anchor = buffer_[buffer_len_ - 1].addr;
@@ -408,6 +407,51 @@ void CombosDygma::fireDeferred(uint8_t index)
   flushing_ = true;
   handleKeyswitchEvent(action_key_, anchor_, IS_PRESSED);
   flushing_ = false;
+}
+
+/* Replace any entry for the same anchor. When the table is full, drop the oldest entry. The Qukeys queue bound keeps that from happening */
+void CombosDygma::addPendingReplay(KeyAddr anchor, Key action)
+{
+  Key unused;
+  takePendingReplay(anchor, unused);
+
+  if (pending_replays_len_ >= MAX_PENDING_REPLAYS)
+  {
+    for (uint8_t i = 1; i < pending_replays_len_; ++i)
+    {
+      pending_replays_[i - 1] = pending_replays_[i];
+    }
+
+    pending_replays_len_--;
+  }
+
+  pending_replays_[pending_replays_len_].anchor = anchor;
+  pending_replays_[pending_replays_len_].action = action;
+  pending_replays_len_++;
+}
+
+/* Remove the entry for this anchor and return its action */
+bool CombosDygma::takePendingReplay(KeyAddr anchor, Key &action)
+{
+  for (uint8_t i = 0; i < pending_replays_len_; ++i)
+  {
+    if (pending_replays_[i].anchor != anchor)
+    {
+      continue;
+    }
+
+    action = pending_replays_[i].action;
+
+    for (uint8_t j = i + 1; j < pending_replays_len_; ++j)
+    {
+      pending_replays_[j - 1] = pending_replays_[j];
+    }
+
+    pending_replays_len_--;
+    return true;
+  }
+
+  return false;
 }
 
 bool CombosDygma::isActiveMember(KeyAddr key_addr) const
@@ -541,16 +585,16 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
       return EventHandlerResult::OK;
     }
 
-    /* Let the Qukeys replay of the last combo's action press through. The combo ended before the replay arrived, and this is
+    /* Let the Qukeys replay of a combo's action press through. The combo ended before the replay arrived, and this is
      * the only press of the action. Swallowing it would lose the combo. Its release is queued behind it */
-    if (keyToggledOn(key_state) && keyRoleManager.isReplayingQueuedEvent() &&
-        key_addr == deferred_anchor_)
+    Key replay_action;
+
+    if (keyToggledOn(key_state) && keyRoleManager.isReplayingQueuedEvent() && takePendingReplay(key_addr, replay_action))
     {
-      deferred_anchor_ = KeyAddr();
-      mapped_key       = deferred_action_;
+      mapped_key = replay_action;
 
       /* Restore the action in the live keymap so the queued release resolves to it */
-      Layer.updateLiveCompositeKeymap(key_addr, deferred_action_);
+      Layer.updateLiveCompositeKeymap(key_addr, replay_action);
       return EventHandlerResult::OK;
     }
 
@@ -562,7 +606,8 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
     /* A real new press. Release the address and handle it as any other. */
     addrFlagSet(owned_, key_addr, false);
 
-    if (key_addr == deferred_anchor_) deferred_anchor_ = KeyAddr();
+    Key unused;
+    takePendingReplay(key_addr, unused);
 
     addrFlagSet(spent_, key_addr, false);
   }
@@ -737,15 +782,13 @@ EventHandlerResult CombosDygma::handleActiveMember(Key &mapped_key, KeyAddr key_
 
     if (keyToggledOn(key_state))
     {
+      Key replay_action = action_key_;
+      takePendingReplay(key_addr, replay_action);
+
       /* A Qukeys replay carries the member key, which key_events.cpp just cached. Restore the action so the queued release resolves to it */
-      Layer.updateLiveCompositeKeymap(anchor_, action_key_);
+      Layer.updateLiveCompositeKeymap(anchor_, replay_action);
 
-      if (key_addr == deferred_anchor_)
-      {
-        deferred_anchor_ = KeyAddr();
-      }
-
-      mapped_key = action_key_;
+      mapped_key = replay_action;
       return EventHandlerResult::OK;
     }
 
@@ -939,7 +982,7 @@ void CombosDygma::resetVolatileState()
 
   last_press_ms_   = 0;
   has_prior_press_ = false;
-  deferred_anchor_ = KeyAddr();
+  pending_replays_len_ = 0;
 
   for (uint8_t i = 0; i < sizeof(flushed_); ++i)
   {
