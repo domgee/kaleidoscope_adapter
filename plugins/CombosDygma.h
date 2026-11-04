@@ -146,9 +146,6 @@ class CombosDygma : public kaleidoscope::Plugin {
   KeyAddr deferred_anchor_;
   Key     deferred_action_;
 
-  /* Anchor of a combo ended by another member. endCombo() already released its action, so its physical release is swallowed */
-  KeyAddr spent_anchor_;
-
   /* Re-entrancy guard. It must cover the WHOLE flush loop and mean "do not
    * buffer", not merely "do not consume": when the Qukeys queue fills up it
    * calls processQueue() synchronously from inside onKeyswitchEvent, which
@@ -175,6 +172,9 @@ class CombosDygma : public kaleidoscope::Plugin {
 
   uint8_t flushed_[MAX_TRACKED_KEYS / 8] = {0};
   uint8_t owned_[MAX_TRACKED_KEYS / 8]   = {0};
+
+  /* Anchors of combos ended by another member. endCombo() already released their action, so their physical release is swallowed */
+  uint8_t spent_[MAX_TRACKED_KEYS / 8]   = {0};
 
   static bool addrFlagGet(const uint8_t *map, KeyAddr key_addr) {
     if (!key_addr.isValid()) return false;
