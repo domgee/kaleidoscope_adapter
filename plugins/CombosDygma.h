@@ -124,7 +124,9 @@ class CombosDygma : public kaleidoscope::Plugin {
    * contains all of them, so the buffer never outgrows MAX_MEMBERS. */
   BufferedPress buffer_[MAX_MEMBERS];
   uint8_t       buffer_len_   = 0;
-  uint32_t      buffer_start_ = 0;
+
+  /* Match window deadline. The timer wakes the MCU from sleep when the window closes */
+  kbdtimer_t    window_timer_ = 0;
 
   /* The idle requirement. Only a physical press of a key that types counts:
    * modifiers, layer shifts and one-shot keys are what a user holds or taps

@@ -273,7 +273,7 @@ void CombosDygma::bufferPress(KeyAddr key_addr, Key mapped_key)
 
   if (buffer_len_ == 0)
   {
-    buffer_start_ = Runtime.millisAtCycleStart();
+    kbdtimer_set_ms(&window_timer_, p_combos_config->match_window_ms);
   }
 
   buffer_[buffer_len_].addr = key_addr;
@@ -768,7 +768,8 @@ EventHandlerResult CombosDygma::beforeReportingState()
 
   if (p_combos_config == nullptr) return EventHandlerResult::OK;
 
-  if (Runtime.hasTimeExpired(buffer_start_, (uint32_t)p_combos_config->match_window_ms))
+  /* Check every cycle while collecting. A pending check re-arms the wake threshold if the system timer dropped it */
+  if (kbdtimer_check(&window_timer_))
   {
     /* Window closed: fire the exact match that was waiting for a longer combo,
      * or flush. Combos runs before keyRoleManager, so this hook fires before
@@ -923,7 +924,7 @@ void CombosDygma::resetVolatileState()
 {
   state_        = State::IDLE;
   buffer_len_   = 0;
-  buffer_start_ = 0;
+  window_timer_ = 0;
   member_count_ = 0;
   anchor_       = KeyAddr();
   flushing_     = false;
