@@ -63,7 +63,7 @@ class CombosDygma : public kaleidoscope::Plugin {
   /* flags bits */
   static constexpr uint8_t FLAG_ENABLED = 0x01;
 
-  static constexpr uint16_t DEFAULT_MATCH_WINDOW_MS = 10;
+  static constexpr uint16_t DEFAULT_MATCH_WINDOW_MS = 50;
   static constexpr uint16_t MIN_MATCH_WINDOW_MS     = 5;
   static constexpr uint16_t MAX_MATCH_WINDOW_MS     = 500;
 
@@ -89,7 +89,7 @@ class CombosDygma : public kaleidoscope::Plugin {
 
   typedef struct PACK
   {
-      uint16_t      match_window_ms;    /* default 10; 0xFFFF => auto-heal   */
+      uint16_t      match_window_ms;    /* default 50; 0xFFFF => auto-heal   */
       uint8_t       combos_count;       /* 0xFF => 0                         */
       uint8_t       layout_version;     /* != LAYOUT_VERSION => wipe         */
       uint16_t      idle_time_ms;       /* default 100; 0xFFFF => auto-heal  */
