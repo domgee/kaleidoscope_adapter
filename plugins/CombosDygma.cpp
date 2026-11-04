@@ -586,6 +586,13 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
     }
   }
 
+  /* Close a window that expired while the MCU slept. Key events run before beforeReportingState, so the press would otherwise join a stale chord */
+  if (state_ == State::COLLECTING && keyToggledOn(key_state) && !keyRoleManager.isReplayingQueuedEvent() &&
+      kbdtimer_check(&window_timer_))
+  {
+    resolveBuffer();
+  }
+
   /* --- a combo is currently held ------------------------------------- */
 
   if (state_ == State::ACTIVE)
