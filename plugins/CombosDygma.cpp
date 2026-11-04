@@ -437,7 +437,9 @@ void CombosDygma::endCombo(bool release_came_from_anchor)
     state_ = State::IDLE;   /* stop owning the address before re-entering */
     addrFlagSet(spent_, anchor_, true);
     flushing_ = true;
-    handleKeyswitchEvent(action_key_, anchor_, WAS_PRESSED);
+
+    /* Release what the anchor holds now, as a physical release would. A Superkey hold may have replaced the action */
+    handleKeyswitchEvent(Layer.lookup(anchor_), anchor_, WAS_PRESSED);
     flushing_ = false;
   }
 
@@ -727,10 +729,9 @@ EventHandlerResult CombosDygma::handleActiveMember(Key &mapped_key, KeyAddr key_
   {
     if (keyToggledOff(key_state))
     {
+      /* Let the real toggle-off through with what the anchor holds now, so Layer::eventHandler and Superkeys see a physical release */
+      mapped_key = Layer.lookup(anchor_);
       endCombo(true);
-      /* Let the real toggle-off through, carrying the action, so
-       * Layer::eventHandler sees it. */
-      mapped_key = action_key_;
       return EventHandlerResult::OK;
     }
 
@@ -743,11 +744,14 @@ EventHandlerResult CombosDygma::handleActiveMember(Key &mapped_key, KeyAddr key_
       {
         deferred_anchor_ = KeyAddr();
       }
+
+      mapped_key = action_key_;
+      return EventHandlerResult::OK;
     }
 
-    /* Held: rewrite in place. The scanner re-reports the anchor every cycle,
-     * which is what keeps the action pressed -- no re-injection loop needed. */
-    mapped_key = action_key_;
+    /* Resolve holds through the live keymap as for a physical key. A Superkey hold injects its HOLD action there, and forcing
+     * action_key_ would drop it after one cycle. The scanner re-reports the anchor every cycle, which keeps it pressed */
+    mapped_key = Layer.lookup(anchor_);
     return EventHandlerResult::OK;
   }
 
