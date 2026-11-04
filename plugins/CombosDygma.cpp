@@ -381,7 +381,8 @@ void CombosDygma::activateCombo(uint8_t index, KeyAddr anchor)
   /* Not optional. key_events.cpp cached the member's own key for this address
    * before the plugin chain ran, so every downstream Key_NoKey re-lookup --
    * the Qukeys queue flush, its restore loop, the release path -- would
-   * resolve the anchor back to the member key instead of the action. */
+   * resolve the anchor back to the member key instead of the action.
+   * Repeat this on every Qukeys replay of the action press, which carries the member key and caches it again. */
   Layer.updateLiveCompositeKeymap(anchor_, action_key_);
 
   CB_LOG("[CB] combo %d matched: %d members, anchor=%d action=0x%04X",
@@ -536,6 +537,9 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
     {
       deferred_anchor_ = KeyAddr();
       mapped_key       = deferred_action_;
+
+      /* Restore the action in the live keymap so the queued release resolves to it */
+      Layer.updateLiveCompositeKeymap(key_addr, deferred_action_);
       return EventHandlerResult::OK;
     }
 
@@ -712,11 +716,15 @@ EventHandlerResult CombosDygma::handleActiveMember(Key &mapped_key, KeyAddr key_
       return EventHandlerResult::OK;
     }
 
-    /* The replay of a deferred action press, arriving while the combo is
-     * still held: the usual case, nothing left pending. */
-    if (keyToggledOn(key_state) && key_addr == deferred_anchor_)
+    if (keyToggledOn(key_state))
     {
-      deferred_anchor_ = KeyAddr();
+      /* A Qukeys replay carries the member key, which key_events.cpp just cached. Restore the action so the queued release resolves to it */
+      Layer.updateLiveCompositeKeymap(anchor_, action_key_);
+
+      if (key_addr == deferred_anchor_)
+      {
+        deferred_anchor_ = KeyAddr();
+      }
     }
 
     /* Held: rewrite in place. The scanner re-reports the anchor every cycle,
