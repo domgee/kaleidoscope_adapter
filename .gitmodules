@@ -1,6 +1,6 @@
 [submodule "kaleidoscope"]
 	path = kaleidoscope
-	url = git@github.com:Dygmalab/Kaleidoscope-Dygma.git
+	url = https://github.com/domgee/Kaleidoscope-Dygma.git
 [submodule "keyboard_api"]
 	path = keyboard_api
 	url = git@github.com:Dygmalab/keyboard_api.git
