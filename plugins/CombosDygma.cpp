@@ -501,9 +501,10 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
 
   /* --- members of a combo, still physically down ---------------------- */
 
-  if (state_ != State::ACTIVE && addrFlagGet(owned_, key_addr))
+  if (addrFlagGet(owned_, key_addr) && !(state_ == State::ACTIVE && isActiveMember(key_addr)))
   {
     /* The chord is over, but this address is not free yet.
+     * Guard a member of an earlier combo here too while a new combo is held. Members of the held combo go to handleActiveMember().
      *
      * RELEASES always go through. Layer::eventHandler needs the toggle-off --
      * the anchor still resolves to the action through the live composite
