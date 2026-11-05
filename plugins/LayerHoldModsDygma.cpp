@@ -17,6 +17,7 @@
 
 #include "LayerHoldModsDygma.h"
 
+#include "CombosDygma.h"
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
 #include "kaleidoscope/keyswitch_state.h"
@@ -223,7 +224,8 @@ uint32_t LayerHoldModsDygma::heldLayerShifts() {
   uint32_t layers = 0;
 
   for (auto key_addr : KeyAddr::all()) {
-    if (!Runtime.device().isKeyswitchPressed(key_addr) || Runtime.device().isKeyMasked(key_addr)) {
+    /* Skip a key whose holds Combos swallows, such as a spent anchor, because it never reactivates its layer */
+    if (!Runtime.device().isKeyswitchPressed(key_addr) || Runtime.device().isKeyMasked(key_addr) || Combos.swallowsHolds(key_addr)) {
       continue;
     }
 

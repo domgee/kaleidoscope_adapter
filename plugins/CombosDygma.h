@@ -104,6 +104,10 @@ class CombosDygma : public kaleidoscope::Plugin {
   EventHandlerResult onFocusEvent(const char *command);
   EventHandlerResult onSetup();
 
+  /* Return true when the address's holds are swallowed until its next genuine press, so a layer key there cannot reactivate
+   * its layer. Leave out buffered members, because a flush still delivers their press */
+  bool swallowsHolds(KeyAddr key_addr) const;
+
  private:
   enum class State : uint8_t {
     IDLE,        /* nothing buffered                                   */

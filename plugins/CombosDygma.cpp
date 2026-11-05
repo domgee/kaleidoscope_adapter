@@ -464,6 +464,22 @@ bool CombosDygma::isActiveMember(KeyAddr key_addr) const
   return false;
 }
 
+bool CombosDygma::swallowsHolds(KeyAddr key_addr) const
+{
+  if (!key_addr.isValid() || addrFlagGet(flushed_, key_addr))
+  {
+    return false;
+  }
+
+  /* Mirror onKeyswitchEvent. The held combo's anchor resolves its holds, its other members are consumed */
+  if (state_ == State::ACTIVE && isActiveMember(key_addr))
+  {
+    return key_addr != anchor_;
+  }
+
+  return addrFlagGet(owned_, key_addr);
+}
+
 void CombosDygma::endCombo(bool release_came_from_anchor)
 {
   CB_LOG("[CB] combo released (from anchor=%d)", release_came_from_anchor);
