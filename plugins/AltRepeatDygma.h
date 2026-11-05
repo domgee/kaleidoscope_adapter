@@ -33,14 +33,15 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   static constexpr uint8_t LAYOUT_VERSION   = 1;
   static constexpr uint8_t MAX_TRACKED_KEYS = 128;   /* largest Dygma matrix, as in CombosDygma */
   static constexpr uint8_t MODS_MASK        = CTRL_HELD | LALT_HELD | SHIFT_HELD | GUI_HELD;   /* 0x1B */
+  static constexpr uint16_t REPEAT_FLAG     = 0x8000;   /* rule_t.previous bit that keeps sending the output on each press of the key */
 
   typedef struct PACK
   {
-      uint8_t  layer;      /* owner layer, Layer.lookupActiveLayer()    */
-      uint8_t  position;   /* KeyAddr::toInt()                          */
-      uint16_t previous;   /* MODS_MASK flags << 8 | keycode 0x04..0xDD */
-      uint16_t output;     /* Key raw value                             */
-  } rule_t;                /* 6 B                                       */
+      uint8_t  layer;      /* owner layer, Layer.lookupActiveLayer()                  */
+      uint8_t  position;   /* KeyAddr::toInt()                                        */
+      uint16_t previous;   /* REPEAT_FLAG | MODS_MASK flags << 8 | keycode 0x04..0xDD */
+      uint16_t output;     /* Key raw value                                           */
+  } rule_t;                /* 6 B                                                     */
 
   typedef struct PACK
   {
@@ -60,6 +61,9 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
    * replaced it since */
   bool ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) const;
 
+  /* End the repeat when a key other than the repeat's own output types. AltRepeatTrack calls it for each key that updates history */
+  void keyTyped(KeyAddr key_addr);
+
   static bool previousAllowed(uint16_t previous);
   static bool outputAllowed(uint16_t output);
 
@@ -73,12 +77,22 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   uint8_t from_rule_[MAX_TRACKED_KEYS / 8];
   uint8_t rule_layer_[MAX_TRACKED_KEYS];
 
+  /* The output a rule with REPEAT_FLAG sent at this address and owner layer, sent again on each press until another key types */
+  bool    repeat_valid_  = false;
+  uint8_t repeat_offset_ = 0;
+  uint8_t repeat_layer_  = 0;
+  Key     repeat_output_ = Key_NoKey;
+
+  /* True from a repeat output's press until the next event that is not injected. Keys that press injects keep the repeat */
+  bool repeat_press_ = false;
+
   /* A write is parsed here in full and saved only when every value is valid */
   static altrepeat_config_t staging_;
 
   void setFromRule(uint8_t offset, bool value);
   bool configValid() const;
-  Key findOutput(Key mapped_key, KeyAddr key_addr) const;
+  bool canReplace(Key mapped_key, KeyAddr key_addr) const;
+  const rule_t *findRule(uint8_t layer, uint8_t position) const;
   static bool replaysCell(Key mapped_key, Key cell);
   static int peekWait();
   static bool readValue(uint16_t &value);

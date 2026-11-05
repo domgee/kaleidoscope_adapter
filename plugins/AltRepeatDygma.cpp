@@ -87,6 +87,20 @@ bool AltRepeatDygma::ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) cons
   return active_out_[offset] == key && rule_layer_[offset] == layer;
 }
 
+void AltRepeatDygma::keyTyped(KeyAddr key_addr)
+{
+  if (!repeat_valid_ || repeat_press_) {
+    return;
+  }
+
+  /* Keep a later delivery of the output at its own address, such as a Superkeys timeline injection */
+  if (key_addr.isValid() && key_addr.toInt() == repeat_offset_ && ruleOutputAt(key_addr, repeat_output_, repeat_layer_)) {
+    return;
+  }
+
+  repeat_valid_ = false;
+}
+
 void AltRepeatDygma::setFromRule(uint8_t offset, bool value)
 {
   if (value) {
@@ -98,6 +112,11 @@ void AltRepeatDygma::setFromRule(uint8_t offset, bool value)
 
 EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
 {
+  /* Only injected events can be nested in a press, so any other event means the repeat output's press is done */
+  if (!(key_state & INJECTED)) {
+    repeat_press_ = false;
+  }
+
   if (!keyToggledOn(key_state) || !key_addr.isValid()) {
     return EventHandlerResult::OK;
   }
@@ -128,7 +147,32 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
     return EventHandlerResult::OK;
   }
 
-  Key output = findOutput(mapped_key, key_addr);
+  Key output = Key_NoKey;
+  uint8_t layer = 0;
+
+  if (canReplace(mapped_key, key_addr)) {
+    layer = Layer.lookupActiveLayer(key_addr);
+
+    if (repeat_valid_ && repeat_offset_ == offset && repeat_layer_ == layer) {
+      output = repeat_output_;
+      repeat_press_ = true;
+    } else {
+      const rule_t *rule = findRule(layer, offset);
+
+      if (rule != nullptr) {
+        output = Key(rule->output);
+
+        if (rule->previous & REPEAT_FLAG) {
+          repeat_valid_ = true;
+          repeat_offset_ = offset;
+          repeat_layer_ = layer;
+          repeat_output_ = output;
+          repeat_press_ = true;
+        }
+      }
+    }
+  }
+
   active_out_[offset] = output;
 
   if (output == Key_NoKey) {
@@ -137,7 +181,7 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
   }
 
   setFromRule(offset, true);
-  rule_layer_[offset] = Layer.lookupActiveLayer(key_addr);
+  rule_layer_[offset] = layer;
 
   mapped_key = output;
 
@@ -151,39 +195,37 @@ bool AltRepeatDygma::configValid() const
   return p_config_ != nullptr && p_config_->layout_version == LAYOUT_VERSION && p_config_->rules_count <= MAX_RULES;
 }
 
-Key AltRepeatDygma::findOutput(Key mapped_key, KeyAddr key_addr) const
+bool AltRepeatDygma::canReplace(Key mapped_key, KeyAddr key_addr) const
 {
   if (!configValid() || p_config_->rules_count == 0) {
-    return Key_NoKey;
-  }
-
-  uint16_t previous = AltRepeatTrack.decisionPrevious();
-
-  if (previous == 0) {
-    return Key_NoKey;
+    return false;
   }
 
   /* A combo's action replays at its anchor. It must not trigger the anchor's rules */
   if (Combos.ownsAddress(key_addr)) {
-    return Key_NoKey;
+    return false;
   }
 
-  if (!replaysCell(mapped_key, Layer.lookupOnActiveLayer(key_addr))) {
-    return Key_NoKey;
-  }
+  return replaysCell(mapped_key, Layer.lookupOnActiveLayer(key_addr));
+}
 
-  uint8_t layer = Layer.lookupActiveLayer(key_addr);
-  uint8_t position = key_addr.toInt();
+const AltRepeatDygma::rule_t *AltRepeatDygma::findRule(uint8_t layer, uint8_t position) const
+{
+  uint16_t previous = AltRepeatTrack.decisionPrevious();
+
+  if (previous == 0) {
+    return nullptr;
+  }
 
   for (uint8_t i = 0; i < p_config_->rules_count; ++i) {
     const rule_t &rule = p_config_->rules[i];
 
-    if (rule.layer == layer && rule.position == position && rule.previous == previous) {
-      return Key(rule.output);
+    if (rule.layer == layer && rule.position == position && (rule.previous & ~REPEAT_FLAG) == previous) {
+      return &rule;
     }
   }
 
-  return Key_NoKey;
+  return nullptr;
 }
 
 /* Return true when the replayed key is the cell's own press, or the resolved tap of a dual-function cell */
@@ -222,7 +264,7 @@ bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
 bool AltRepeatDygma::previousAllowed(uint16_t previous)
 {
   uint8_t keycode = previous & 0xFF;
-  uint8_t flags = previous >> 8;
+  uint8_t flags = (previous & ~REPEAT_FLAG) >> 8;
 
   if (keycode < HID_KEYBOARD_A_AND_A || keycode > HID_LAST_KEY) {
     return false;
@@ -274,6 +316,7 @@ EventHandlerResult AltRepeatDygma::onFocusEvent(const char *command)
     sendRules();
   } else if (readRules()) {
     cfgmem_config_save(&staging_);
+    repeat_valid_ = false;
   } else {
     /* Read the rest of a rejected line here, because FocusSerial::drain does not wait for bytes still in transit */
     for (int c = peekWait(); c >= 0 && c != '\n'; c = peekWait()) {
@@ -379,7 +422,8 @@ bool AltRepeatDygma::readRules()
     for (uint16_t j = 0; j < i; ++j) {
       const rule_t &staged = staging_.rules[j];
 
-      if (staged.layer == layer && staged.position == position && staged.previous == previous) {
+      /* The same previous key with and without REPEAT_FLAG is a duplicate */
+      if (staged.layer == layer && staged.position == position && ((staged.previous ^ previous) & ~REPEAT_FLAG) == 0) {
         return false;
       }
     }
@@ -422,6 +466,8 @@ EventHandlerResult AltRepeatDygma::onSetup()
   }
 
   memset(from_rule_, 0, sizeof(from_rule_));
+  repeat_valid_ = false;
+  repeat_press_ = false;
 
   /* Erased flash or another layout. Runs once after a flash */
   if (!configValid()) {
@@ -510,6 +556,8 @@ EventHandlerResult AltRepeatTrackDygma::onKeyswitchEvent(Key &mapped_key, KeyAdd
   if ((key_state & INJECTED) && key_addr.isValid() && ::Keyboard.wasKeyPressed(keycode)) {
     return EventHandlerResult::OK;
   }
+
+  AltRepeat.keyTyped(key_addr);
 
   for (uint8_t i = 0; i < pending_len_; ++i) {
     if (pending_[i].keycode == keycode) {
