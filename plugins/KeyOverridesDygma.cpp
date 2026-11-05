@@ -641,7 +641,7 @@ void KeyOverridesDygma::fireDeferred()
 
 EventHandlerResult KeyOverridesDygma::beforeEachCycle()
 {
-  /* The last report carried any replacement pressed in the cycle before */
+  /* Forget the replacement the last report carried */
   replacement_fresh_ = false;
 
   if (wake_pending_ && kbdtimer_check(&wake_)) {
