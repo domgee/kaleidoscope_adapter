@@ -72,19 +72,28 @@ EventHandlerResult AltRepeatRepairDygma::onKeyswitchEvent(Key &mapped_key, KeyAd
   return EventHandlerResult::OK;
 }
 
-Key AltRepeatDygma::substitutedOutput(KeyAddr key_addr) const
+bool AltRepeatDygma::ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) const
 {
   if (!key_addr.isValid()) {
-    return Key_NoKey;
+    return false;
   }
 
   uint8_t offset = key_addr.toInt();
 
-  if (offset >= MAX_TRACKED_KEYS) {
-    return Key_NoKey;
+  if (offset >= MAX_TRACKED_KEYS || !(from_rule_[offset >> 3] & (1 << (offset & 7)))) {
+    return false;
   }
 
-  return active_out_[offset];
+  return active_out_[offset] == key && rule_layer_[offset] == layer;
+}
+
+void AltRepeatDygma::setFromRule(uint8_t offset, bool value)
+{
+  if (value) {
+    from_rule_[offset >> 3] |= (1 << (offset & 7));
+  } else {
+    from_rule_[offset >> 3] &= ~(1 << (offset & 7));
+  }
 }
 
 EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
@@ -102,6 +111,11 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
   if (key_state & INJECTED) {
     /* A Superkey hold or a timeline delivery replaced what this address holds. Track it so a re-press restores the current action */
     if (active_out_[offset] != Key_NoKey) {
+      /* Another key replaced the rule's output, such as a Superkey action */
+      if (mapped_key != active_out_[offset]) {
+        setFromRule(offset, false);
+      }
+
       active_out_[offset] = mapped_key;
     }
 
@@ -118,8 +132,12 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
   active_out_[offset] = output;
 
   if (output == Key_NoKey) {
+    setFromRule(offset, false);
     return EventHandlerResult::OK;
   }
+
+  setFromRule(offset, true);
+  rule_layer_[offset] = Layer.lookupActiveLayer(key_addr);
 
   mapped_key = output;
 
@@ -400,7 +418,10 @@ EventHandlerResult AltRepeatDygma::onSetup()
 
   for (uint8_t i = 0; i < MAX_TRACKED_KEYS; ++i) {
     active_out_[i] = Key_NoKey;
+    rule_layer_[i] = 0;
   }
+
+  memset(from_rule_, 0, sizeof(from_rule_));
 
   /* Erased flash or another layout. Runs once after a flash */
   if (!configValid()) {

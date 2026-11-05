@@ -91,9 +91,9 @@ bool LayerHoldModsDygma::registerHold(Key key, KeyAddr key_addr) {
     return false;
   }
 
-  /* Let only the layer that defines the key own it, directly or through the previous-key rule that replaced it on that layer.
+  /* Let only the owner layer's keymap, or a previous-key rule on the owner layer whose output this press is, define the key.
    * Keep Superkey actions, combo outputs, stale replays and the default layer plain */
-  if (Layer.getKey(owner, key_addr).getRaw() != key.getRaw() && AltRepeat.substitutedOutput(key_addr).getRaw() != key.getRaw()) {
+  if (Layer.getKey(owner, key_addr).getRaw() != key.getRaw() && !AltRepeat.ruleOutputAt(key_addr, key, owner)) {
     return false;
   }
 

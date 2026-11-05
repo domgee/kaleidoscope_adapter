@@ -56,8 +56,9 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   /* Put a replaced output back into the live keymap when a new press refreshed it while the earlier release is still queued */
   void repairCache(KeyAddr key_addr, uint8_t key_state);
 
-  /* The output a rule put on this address at its last replayed press, Key_NoKey when none did */
-  Key substitutedOutput(KeyAddr key_addr) const;
+  /* Return true when a rule on this layer put this key on the address at its last replayed press, and no other injected key
+   * replaced it since */
+  bool ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) const;
 
   static bool previousAllowed(uint16_t previous);
   static bool outputAllowed(uint16_t output);
@@ -68,9 +69,14 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   /* What each address holds since its last replayed press, Key_NoKey when no rule replaced it */
   Key active_out_[MAX_TRACKED_KEYS];
 
+  /* Mark per address that active_out_ is still the output of the rule on rule_layer_ */
+  uint8_t from_rule_[MAX_TRACKED_KEYS / 8];
+  uint8_t rule_layer_[MAX_TRACKED_KEYS];
+
   /* A write is parsed here in full and saved only when every value is valid */
   static altrepeat_config_t staging_;
 
+  void setFromRule(uint8_t offset, bool value);
   bool configValid() const;
   Key findOutput(Key mapped_key, KeyAddr key_addr) const;
   static bool replaysCell(Key mapped_key, Key cell);
