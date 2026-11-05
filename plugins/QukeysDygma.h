@@ -215,6 +215,17 @@ class Qukeys : public kaleidoscope::Plugin {
     return flushing_queue_;
   }
 
+  /* Return true when the first queued event at this address is a release, so an earlier press there is still logically held */
+  bool hasQueuedReleaseFirst(KeyAddr k) const {
+    for (uint8_t i{0}; i < event_queue_.length(); ++i) {
+      if (event_queue_.addr(i) == k) {
+        return event_queue_.isRelease(i);
+      }
+    }
+
+    return false;
+  }
+
   // Kaleidoscope hook functions.
   EventHandlerResult onKeyswitchEvent(Key &mapped_key,
                                       KeyAddr key_addr,

@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "AltRepeatDygma.h"
 #include "AutoshiftDygma.h"
 #include "BaseDygma.h"
 #include "CapsWordDygma.h"
@@ -55,6 +56,8 @@ KEYMAPS
 KALEIDOSCOPE_INIT_PLUGINS
 (
     EEPROMKeymap,
+    /*AltRepeatRepair precedes Combos, which may buffer a re-press before AltRepeat sees it*/
+    AltRepeatRepair,
     /*CapsWord trigger and Autoshift — must precede keyRoleManager so their own
       ranges are consumed before the Qukeys queue and the SuperKeys timeline see
       them. That keeps them out of both delay stages and of the timeline's
@@ -63,6 +66,9 @@ KALEIDOSCOPE_INIT_PLUGINS
       raw keyswitch events before any plugin can consume them -- including
       Autoshift, which owns its own range.*/
     Combos,
+    /*AltRepeat follows Combos and precedes keyRoleManager. It replaces a key on its Qukeys replay, before CapsWordTrigger,
+      Autoshift and Superkeys see it*/
+    AltRepeat,
     CapsWordTrigger, Autoshift,
     keyRoleManager,
     /*Run after keyRoleManager to see resolved Qukeys replays and Superkeys
@@ -77,7 +83,9 @@ KALEIDOSCOPE_INIT_PLUGINS
     KbdInterface,
     /*CapsWord shift — must follow KbdInterface, which looks its key table up by
       the exact raw value and would miss a key carrying SHIFT_HELD*/
-    CapsWordShift
+    CapsWordShift,
+    /*AltRepeatTrack runs last to see each key as it goes into the report*/
+    AltRepeatTrack
 );
 
 result_t kbdfal_ll_base_init( void )

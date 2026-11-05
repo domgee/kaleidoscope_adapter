@@ -480,6 +480,11 @@ bool CombosDygma::swallowsHolds(KeyAddr key_addr) const
   return addrFlagGet(owned_, key_addr);
 }
 
+bool CombosDygma::ownsAddress(KeyAddr key_addr) const
+{
+  return key_addr.isValid() && !addrFlagGet(flushed_, key_addr) && addrFlagGet(owned_, key_addr);
+}
+
 void CombosDygma::endCombo(bool release_came_from_anchor)
 {
   CB_LOG("[CB] combo released (from anchor=%d)", release_came_from_anchor);

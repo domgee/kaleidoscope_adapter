@@ -108,6 +108,9 @@ class CombosDygma : public kaleidoscope::Plugin {
    * its layer. Leave out buffered members, because a flush still delivers their press */
   bool swallowsHolds(KeyAddr key_addr) const;
 
+  /* Return true when the address belongs to a fired combo, so a replayed press there carries the combo's action and not the key's own */
+  bool ownsAddress(KeyAddr key_addr) const;
+
  private:
   enum class State : uint8_t {
     IDLE,        /* nothing buffered                                   */
