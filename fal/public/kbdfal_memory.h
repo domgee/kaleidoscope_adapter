@@ -38,6 +38,7 @@ extern "C" {
         KBDMEM_ITEM_TYPE_CAPSWORD,
         KBDMEM_ITEM_TYPE_COMBOS,
         KBDMEM_ITEM_TYPE_ALTREPEAT,
+        KBDMEM_ITEM_TYPE_KEYOVERRIDES,
     } kbdmem_item_type_t;
 
 #ifdef __cplusplus

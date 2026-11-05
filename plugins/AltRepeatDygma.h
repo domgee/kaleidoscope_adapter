@@ -68,6 +68,10 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   static bool previousAllowed(uint16_t previous);
   static bool outputAllowed(uint16_t output);
 
+  /* Focus readers, shared with KeyOverrides. Wait for a byte as Stream::timedPeek does, and read one decimal of at most 0xFFFF */
+  static int peekWait();
+  static bool readValue(uint16_t &value);
+
  private:
   const altrepeat_config_t *p_config_ = nullptr;
 
@@ -98,8 +102,6 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   bool canReplace(Key mapped_key, KeyAddr key_addr) const;
   const rule_t *findRule(uint8_t layer, uint8_t position) const;
   static bool replaysCell(Key mapped_key, Key cell);
-  static int peekWait();
-  static bool readValue(uint16_t &value);
   bool readRules();
   void sendRules() const;
   void cfgmem_config_save(const altrepeat_config_t *p_config);
@@ -125,6 +127,9 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
   /* The previous key for a decision. A key not yet in a report counts, with the modifiers of the report being built */
   uint16_t decisionPrevious() const;
   void commitReport(uint8_t id, const void *data, int len);
+
+  /* Record a typing key that reached the report without a toggle-on, such as a key override's deferred register */
+  void noteTyped(Key key, KeyAddr key_addr);
 
  private:
   /* Keys pressed since the last report, normally one or two. An injected release takes its key out at once.

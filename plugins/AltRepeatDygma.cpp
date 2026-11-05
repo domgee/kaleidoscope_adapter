@@ -578,11 +578,19 @@ EventHandlerResult AltRepeatTrackDygma::onKeyswitchEvent(Key &mapped_key, KeyAdd
     return EventHandlerResult::OK;
   }
 
+  noteTyped(mapped_key, key_addr);
+  return EventHandlerResult::OK;
+}
+
+void AltRepeatTrackDygma::noteTyped(Key key, KeyAddr key_addr)
+{
+  uint8_t keycode = key.getKeyCode();
+
   AltRepeat.keyTyped(key_addr);
 
   for (uint8_t i = 0; i < pending_len_; ++i) {
     if (pending_[i].keycode == keycode) {
-      return EventHandlerResult::OK;
+      return;
     }
   }
 
@@ -595,10 +603,9 @@ EventHandlerResult AltRepeatTrackDygma::onKeyswitchEvent(Key &mapped_key, KeyAdd
   }
 
   pending_[pending_len_].keycode = keycode;
-  pending_[pending_len_].flags = foldFlags(mapped_key.getFlags());
+  pending_[pending_len_].flags = foldFlags(key.getFlags());
   pending_[pending_len_].layer = key_addr.isValid() ? Layer.lookupActiveLayer(key_addr) : 0;
   pending_len_++;
-  return EventHandlerResult::OK;
 }
 
 EventHandlerResult AltRepeatTrackDygma::afterEachCycle()

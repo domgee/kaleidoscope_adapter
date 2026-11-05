@@ -33,6 +33,11 @@ class BaseDygma : public Plugin
     result_t key_report_enable( void );
     result_t key_report_disable( void );
 
+    /* False while the keyboard API holds key reports off, such as during BLE pairing */
+    bool isKeyReportEnabled() const {
+      return key_report_enabled;
+    }
+
   private:
 
     bool_t key_report_enabled = true;

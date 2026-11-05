@@ -34,6 +34,11 @@ class LayerHoldModsDygma : public kaleidoscope::Plugin {
   EventHandlerResult beforeReportingState();
   EventHandlerResult onFocusEvent(const char *command);
 
+  /* The modifiers the plugin holds, in Key flags. KeyOverrides counts them as held modifiers */
+  uint8_t heldMods() const {
+    return held_mods_;
+  }
+
   static constexpr uint8_t  HOLD_FLAG        = 0x20;
   static constexpr uint16_t RAW_MASK         = 0xE000;  /* HOLD_FLAG, SYNTHETIC and RESERVED */
   static constexpr uint16_t RAW_HOLD         = 0x2000;
