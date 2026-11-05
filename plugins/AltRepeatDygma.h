@@ -53,6 +53,7 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   EventHandlerResult onSetup();
   EventHandlerResult onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state);
   EventHandlerResult onFocusEvent(const char *command);
+  EventHandlerResult onLayerChange();
 
   /* Put a replaced output back into the live keymap when a new press refreshed it while the earlier release is still queued */
   void repairCache(KeyAddr key_addr, uint8_t key_state);

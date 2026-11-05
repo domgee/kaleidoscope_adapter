@@ -310,6 +310,13 @@ bool AltRepeatDygma::outputAllowed(uint16_t output)
   return mods != 0 && keycode >= HID_KEYBOARD_A_AND_A && keycode <= HID_LAST_KEY;
 }
 
+/* End the repeat on any layer change, as a press of another key would */
+EventHandlerResult AltRepeatDygma::onLayerChange()
+{
+  repeat_valid_ = false;
+  return EventHandlerResult::OK;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Focus                                                                     */
 /* ------------------------------------------------------------------------- */
