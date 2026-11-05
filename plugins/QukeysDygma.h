@@ -113,10 +113,10 @@ class Qukeys : public kaleidoscope::Plugin {
 
     } Qukeys_config_t;
 
-    /* Quick tap gets its own block, appended to config_cache_t, because Qukeys_config_t is packed with no spare byte */
+    /* Store quick tap in its own block appended to config_cache_t, because Qukeys_config_t is packed with no spare byte */
     typedef struct PACK
     {
-        /* A qukey pressed again less than this many ms after its tap's release sends its tap key at once. 0 = off */
+        /* Send a qukey's tap key at once when it is pressed again less than this many ms after its tap's release. 0 = off */
         uint16_t quick_tap_term;
     } QuickTap_config_t;
 
@@ -233,7 +233,7 @@ class Qukeys : public kaleidoscope::Plugin {
     return false;
   }
 
-  /* Note a genuine physical key press. CombosDygma calls this for every one, before any plugin can consume it */
+  /* Note a genuine physical key press. Call it from CombosDygma for every one, before any plugin can consume it */
   void notePhysicalPress(KeyAddr k);
 
   // Kaleidoscope hook functions.
@@ -303,13 +303,13 @@ class Qukeys : public kaleidoscope::Plugin {
 
   const QuickTap_config_t * p_QuickTap_config{nullptr};
 
-  /* The last qukey press flushed as a tap, and the time of its release when that came within the hold timeout */
+  /* Track the last qukey press flushed as a tap, and the time of its release when that came within the hold timeout */
   KeyAddr  tap_addr_;
   bool     tap_released_{false};
   uint32_t tap_press_ms_{0};
   uint32_t tap_release_ms_{0};
 
-  /* The last genuine physical press, and a press of the same address right after it with its physical time */
+  /* Track the last genuine physical press, and latch a press of the same address right after it with its physical time */
   KeyAddr  last_press_addr_;
   KeyAddr  latch_addr_;
   uint32_t latch_ms_{0};

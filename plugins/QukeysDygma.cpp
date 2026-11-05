@@ -325,18 +325,18 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
   KeyAddr queue_head_addr = event_queue_.addr(0);
   uint8_t keyswitch_state = event_queue_.isRelease(0) ? WAS_PRESSED : IS_PRESSED;
 
-  /* Track the last tap for quick tap. Any other press flush ends it, because that key reached the host between the tap and a re-press */
+  /* Track the last tap for quick tap. End it at any other press flush, because that key reached the host between the tap and a re-press */
   uint32_t head_ms = widenTimestamp(event_queue_.timestamp(0));
 
   if (event_queue_.isRelease(0)) {
     noteTapRelease(queue_head_addr, head_ms);
   } else {
-    /* Keep a latch that belongs to a later press of this address */
+    /* Drop the latch at its own press or a later one. Keep it for an earlier press of this address */
     if (queue_head_addr == latch_addr_ && !isBefore(head_ms, latch_ms_)) {
       latch_addr_ = KeyAddr();
     }
 
-    /* A combo action replayed at its anchor is no tap */
+    /* Never count a combo action replayed at its anchor as a tap */
     if (quick_tap_arms && quickTapTerm() != 0 && !Combos.ownsAddress(queue_head_addr)) {
       tap_addr_ = queue_head_addr;
       tap_released_ = false;
@@ -560,7 +560,7 @@ bool Qukeys::quickTapDue(KeyAddr k)
     return false;
   }
 
-  /* Leave the latch to its own press. An earlier press of this address reaches the head first when a pending qukey held the queue up */
+  /* Leave the latch to its own press, since an earlier press of this address reaches the head first when a pending qukey held the queue up */
   if (isBefore(widenTimestamp(event_queue_.timestamp(0)), latch_ms_)) {
     return false;
   }
@@ -607,7 +607,7 @@ uint16_t Qukeys::quickTapTerm() const
   return term < p_Qukeys_config->hold_timeout ? term : p_Qukeys_config->hold_timeout;
 }
 
-/* Widen a queue timestamp to 32 bits. A queued event is at most a hold timeout old, well under 65536 ms */
+/* Widen a queue timestamp to 32 bits. Rely on a queued event being at most a hold timeout old, well under 65536 ms */
 uint32_t Qukeys::widenTimestamp(uint16_t timestamp)
 {
   uint32_t now = Runtime.millisAtCycleStart();
@@ -664,8 +664,9 @@ static bool readQuickTapTerm(uint16_t &term)
 EventHandlerResult Qukeys::onFocusEvent(const char *command)
 {
   if (::Focus.handleHelp(command, PSTR("qukeys.holdTimeout\nqukeys.overlapThreshold\nqukeys.minimumHoldTime\nqukeys.minimumPriorInterval\n"
-                                       "qukeys.quickTapTerm")))
+                                       "qukeys.quickTapTerm"))) {
     return EventHandlerResult::OK;
+  }
 
   if (strncmp_P(command, PSTR("qukeys."), 7) != 0)
     return EventHandlerResult::OK;
@@ -797,7 +798,7 @@ EventHandlerResult Qukeys::onSetup()
   result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_QUICKTAP, (const void **)&p_QuickTap_config );
   ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
 
-  /* Start with quick tap off. Erased flash reads 0xFFFF */
+  /* Start with quick tap off when the stored term is out of range, such as 0xFFFF from erased flash */
   if( p_QuickTap_config->quick_tap_term > MAX_QUICK_TAP_TERM_MS )
   {
     mem_quick_tap_term_save( 0 );
