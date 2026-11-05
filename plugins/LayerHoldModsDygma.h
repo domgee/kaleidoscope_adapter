@@ -42,15 +42,15 @@ class LayerHoldModsDygma : public kaleidoscope::Plugin {
   static constexpr uint8_t  MAX_TRACKED_KEYS = 128;     /* largest Dygma matrix, as in AutoshiftDygma */
 
  private:
-  /* Union of held modifiers per owner layer */
+  /* Track the union of held modifiers per owner layer */
   uint8_t    mods_[MAX_LAYERS] = {0};
   uint32_t   owners_       = 0;
   uint8_t    held_mods_    = 0;
 
-  /* Per address, the press registered and goes out as the bare key */
+  /* Mark per address a registered press, which goes out as the bare key */
   uint8_t    bare_[MAX_TRACKED_KEYS / 8] = {0};
 
-  /* Per address, the press was delivered once, so an injected duplicate does not register again */
+  /* Mark per address a delivered press, so an injected duplicate does not register again */
   uint8_t    delivered_[MAX_TRACKED_KEYS / 8] = {0};
 
   bool       check_        = false;
@@ -68,6 +68,7 @@ class LayerHoldModsDygma : public kaleidoscope::Plugin {
   bool registerHold(Key key, KeyAddr key_addr);
   bool ownerInactive() const;
   void dropInactiveOwners(bool in_report);
+  static uint32_t heldLayerShifts();
   static void pressMods(uint8_t mods);
   static void releaseMods(uint8_t mods);
   static void pressPhysicalModifiers();

@@ -65,8 +65,8 @@ KALEIDOSCOPE_INIT_PLUGINS
     Combos,
     CapsWordTrigger, Autoshift,
     keyRoleManager,
-    /*LayerHoldMods follows keyRoleManager to see resolved Qukeys replays and Superkeys
-      deliveries, and strips the hold flag before KbdInterface matches exact raw values*/
+    /*Run after keyRoleManager to see resolved Qukeys replays and Superkeys
+      deliveries, and strip the hold flag before KbdInterface matches exact raw values*/
     LayerHoldMods,
     LEDControl, KeyboardFocus, DynamicMacros,
     /*SideFlash,*/ Focus, MouseKeys, OneShot, LayerFocus,

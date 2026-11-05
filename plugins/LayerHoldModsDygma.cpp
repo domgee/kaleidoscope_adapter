@@ -45,14 +45,14 @@ EventHandlerResult LayerHoldModsDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr
 
   Key hold_key = mapped_key;
 
-  /* Register first, so the form sent below follows the outcome. An injected duplicate keeps the first delivery's form */
+  /* Register first, so the form sent below follows the outcome. Keep the first delivery's form for an injected duplicate */
   if (keyToggledOn(key_state) && key_addr.isValid() && !((key_state & INJECTED) && getBit(delivered_, key_addr))) {
     if (registerHold(hold_key, key_addr)) {
       setBit(bare_, key_addr, true);
       /* Press now so a mid-scan report from a macro or an Autoshift tap carries them */
       pressMods(held_mods_);
     } else {
-      /* A press that did not register is a plain shortcut */
+      /* Send a press that did not register as a plain shortcut */
       setBit(bare_, key_addr, false);
     }
 
@@ -85,7 +85,7 @@ bool LayerHoldModsDygma::registerHold(Key key, KeyAddr key_addr) {
 
   uint8_t owner = Layer.lookupActiveLayer(key_addr);
 
-  /* Only the layer that defines the key owns it. Superkey actions, combo outputs, stale replays and the default layer stay plain shortcuts */
+  /* Let only the layer that defines the key own it. Keep Superkey actions, combo outputs, stale replays and the default layer plain */
   if (owner == 0 || owner >= MAX_LAYERS || Layer.getKey(owner, key_addr).getRaw() != key.getRaw()) {
     return false;
   }
@@ -114,7 +114,7 @@ EventHandlerResult LayerHoldModsDygma::onLayerChange() {
   /* Apply in the report hooks, so a deactivate and reactivate in one scan keeps the modifiers */
   check_ = true;
 
-  /* The report is already out (OneShot afterEachCycle, Focus layer commands). Wake once more to send the release */
+  /* The report is already built (Focus layer commands, OneShot afterEachCycle). Wake once more to send the release */
   if (report_built_ && !wake_pending_) {
     kbdtimer_set_ms(&wake_timer_, 1);
     wake_pending_ = true;
@@ -134,7 +134,7 @@ EventHandlerResult LayerHoldModsDygma::beforeEachCycle() {
     return EventHandlerResult::OK;
   }
 
-  /* releaseAllKeys emptied the report, so there is nothing to release here */
+  /* Skip the release here, because releaseAllKeys emptied the report */
   if (check_) {
     dropInactiveOwners(false);
   }
@@ -164,6 +164,8 @@ void LayerHoldModsDygma::dropInactiveOwners(bool in_report) {
   check_ = false;
   uint8_t before = held_mods_;
   held_mods_ = 0;
+  bool shifts_read = false;
+  uint32_t shifted = 0;
 
   for (uint8_t layer = 1; layer < MAX_LAYERS; layer++) {
     uint32_t bit = (uint32_t)1 << layer;
@@ -173,9 +175,19 @@ void LayerHoldModsDygma::dropInactiveOwners(bool in_report) {
     }
 
     if (!Layer.isActive(layer)) {
-      owners_ &= ~bit;
-      mods_[layer] = 0;
-      continue;
+      if (!shifts_read) {
+        shifted = heldLayerShifts();
+        shifts_read = true;
+      }
+
+      if (!(shifted & bit)) {
+        owners_ &= ~bit;
+        mods_[layer] = 0;
+        continue;
+      }
+
+      /* Keep the hold while another momentary key holds the layer. Layer_ reactivates it on that key's next event, so check again */
+      check_ = true;
     }
 
     held_mods_ |= mods_[layer];
@@ -185,7 +197,7 @@ void LayerHoldModsDygma::dropInactiveOwners(bool in_report) {
 
   if (in_report && dropped != 0) {
     releaseMods(dropped);
-    /* Releasing a modifier strips it for every key, so put back the physically held ones */
+    /* Put back the physically held modifiers, because a release strips the modifier for every key */
     pressPhysicalModifiers();
   }
 }
@@ -206,14 +218,38 @@ void LayerHoldModsDygma::releaseMods(uint8_t mods) {
   }
 }
 
-/* OneShot modifiers come back from OneShot::beforeReportingState, which runs after this plugin */
+/* Return the layers that a pressed momentary layer key shifts to */
+uint32_t LayerHoldModsDygma::heldLayerShifts() {
+  uint32_t layers = 0;
+
+  for (auto key_addr : KeyAddr::all()) {
+    if (!Runtime.device().isKeyswitchPressed(key_addr) || Runtime.device().isKeyMasked(key_addr)) {
+      continue;
+    }
+
+    /* Match ShiftToLayer(n) in the live cache, which also holds a resolved dual-function or Superkey layer hold */
+    Key key = Layer.lookup(key_addr);
+    uint8_t keycode = key.getKeyCode();
+
+    if (key.getFlags() != (KEY_FLAGS | SYNTHETIC | SWITCH_TO_KEYMAP) || keycode < LAYER_SHIFT_OFFSET ||
+        keycode >= LAYER_SHIFT_OFFSET + MAX_LAYERS) {
+      continue;
+    }
+
+    layers |= (uint32_t)1 << (keycode - LAYER_SHIFT_OFFSET);
+  }
+
+  return layers;
+}
+
+/* Leave OneShot modifiers to OneShot::beforeReportingState, which runs after this plugin */
 void LayerHoldModsDygma::pressPhysicalModifiers() {
   for (auto key_addr : KeyAddr::all()) {
     if (!Runtime.device().isKeyswitchPressed(key_addr) || Runtime.device().isKeyMasked(key_addr)) {
       continue;
     }
 
-    /* The live cache holds what the key resolved to, so qukey and superkey hold modifiers count too */
+    /* Read the live cache, which holds what the key resolved to, so qukey and superkey hold modifiers count too */
     Key key = Layer.lookup(key_addr);
 
     if ((key.getFlags() & (SYNTHETIC | RESERVED)) || key.getKeyCode() < HID_KEYBOARD_FIRST_MODIFIER ||
@@ -266,7 +302,7 @@ EventHandlerResult LayerHoldModsDygma::onFocusEvent(const char *command) {
     return EventHandlerResult::OK;
   }
 
-  /* Read-only. Bazecor offers the checkbox when help lists this command */
+  /* Report only. Bazecor offers the checkbox when help lists this command */
   ::Focus.send(owners_, held_mods_);
   return EventHandlerResult::EVENT_CONSUMED;
 }
