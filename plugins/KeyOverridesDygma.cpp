@@ -185,7 +185,7 @@ EventHandlerResult KeyOverridesDygma::onSetup()
   result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_KEYOVERRIDES, (const void **)&p_config_ );
   ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
 
-  /* Erased flash or another layout. Runs once after a flash */
+  /* Write an empty table over erased flash or another layout, which happens once after a flash */
   if (!configValid()) {
     memset(&staging_, 0, sizeof(staging_));
     staging_.layout_version = LAYOUT_VERSION;
@@ -348,12 +348,16 @@ EventHandlerResult KeyOverridesDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr 
     /* Resolve the release to what the address sent, so an injected release takes the right key out */
     EventHandlerResult result = outputAt(mapped_key, key_addr, key_state);
 
+    if (active_valid_ && active_addr_ == offset) {
+      sendFreshReplacement();
+    }
+
     releaseAt(offset);
     return result;
   }
 
   if (count_ != 0 && keyToggledOn(key_state) && mapped_key != Key_NoKey) {
-    /* A Superkeys timeline or hold delivery repeats a press the address already made */
+    /* Skip a Superkeys timeline or hold delivery that repeats a press the address already made */
     bool duplicate = (key_state & INJECTED) &&
                      (getBit(down_, offset) || getBit(muted_, offset) || (active_valid_ && active_addr_ == offset));
 
@@ -388,8 +392,8 @@ void KeyOverridesDygma::pressAt(Key key, KeyAddr key_addr)
     deactivate(false);
   }
 
-  /* LayerHoldMods modifiers registered with this press belong to it */
-  mods_last_ = transitionMods();
+  /* Take in the LayerHoldMods modifiers registered with this press, and keep a loss no toggle reported for maskChanged */
+  mods_last_ = (uint8_t)(mods_last_ | transitionMods());
 }
 
 void KeyOverridesDygma::releaseAt(uint8_t offset)
@@ -427,6 +431,10 @@ EventHandlerResult KeyOverridesDygma::outputAt(Key &mapped_key, KeyAddr key_addr
 
     /* The replacement's modifiers go out through the report filter, as QMK weak override mods */
     mapped_key = Key((uint8_t)(active_replacement_ & 0xFF), KEY_FLAGS);
+
+    if (keyToggledOn(key_state)) {
+      replacement_fresh_ = true;
+    }
   } else if (getBit(muted_, offset)) {
     return EventHandlerResult::EVENT_CONSUMED;
   }
@@ -438,6 +446,24 @@ EventHandlerResult KeyOverridesDygma::outputAt(Key &mapped_key, KeyAddr key_addr
   }
 
   return EventHandlerResult::OK;
+}
+
+/* Send a replacement pressed in this cycle before the trigger's release takes it out, so a tap Qukeys replays within one cycle
+ * still reaches the host once with its modifier filter */
+void KeyOverridesDygma::sendFreshReplacement()
+{
+  if (!replacement_fresh_ || !active_registered_ || active_replacement_ == 0) {
+    return;
+  }
+
+  uint8_t keycode = (uint8_t)(active_replacement_ & 0xFF);
+
+  /* Skip it when a mid-cycle report already carried it */
+  if (::Keyboard.isKeyPressed(keycode) && !::Keyboard.wasKeyPressed(keycode)) {
+    Runtime.hid().keyboard().sendReport();
+  }
+
+  replacement_fresh_ = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -487,6 +513,7 @@ void KeyOverridesDygma::activate(uint8_t index, bool via_modifier)
   active_registered_ = !via_modifier;
   active_replacement_ = o.replacement;
   active_options_ = o.options;
+  replacement_fresh_ = false;
 
   ::Keyboard.setModifierFilter(bothSides(o.suppressed_mods), flagsToHid((uint8_t)(o.replacement >> 8)));
 
@@ -614,6 +641,9 @@ void KeyOverridesDygma::fireDeferred()
 
 EventHandlerResult KeyOverridesDygma::beforeEachCycle()
 {
+  /* The last report carried any replacement pressed in the cycle before */
+  replacement_fresh_ = false;
+
   if (wake_pending_ && kbdtimer_check(&wake_)) {
     wake_pending_ = false;
   }
@@ -661,7 +691,7 @@ EventHandlerResult KeyOverridesDygma::beforeReportingState()
 
   maskChanged();
 
-  /* The trigger lost its key without a release. Wake once more so the next cycle ends the override and sends a clean report */
+  /* Wake once more when the trigger lost its key without a release, so the next cycle ends the override and sends a clean report */
   if (active_valid_ && !isHeld(active_addr_) && !wake_pending_) {
     kbdtimer_set_ms(&wake_, 1);
     wake_pending_ = true;

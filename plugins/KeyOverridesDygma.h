@@ -90,6 +90,7 @@ class KeyOverridesDygma : public kaleidoscope::Plugin {
   bool     active_registered_  = false;   /* false while a deferred replacement waits */
   uint16_t active_replacement_ = 0;
   uint8_t  active_options_     = 0;
+  bool     replacement_fresh_  = false;   /* the replacement toggled on in this cycle */
 
   /* The last non-modifier key pressed and still held, QMK last_key_down */
   uint8_t  last_addr_    = NO_ADDR;
@@ -141,6 +142,7 @@ class KeyOverridesDygma : public kaleidoscope::Plugin {
   bool tryActivate(bool is_mod, bool key_down, uint8_t mods);
   void activate(uint8_t index, bool via_modifier);
   void deactivate(bool allow_reregister);
+  void sendFreshReplacement();
   bool modEvent(bool key_down);
   void maskChanged();
   void scheduleDeferred(Deferred kind, uint8_t offset);
