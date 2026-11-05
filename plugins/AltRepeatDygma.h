@@ -120,6 +120,7 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
   EventHandlerResult onSetup();
   EventHandlerResult onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state);
   EventHandlerResult afterEachCycle();
+  EventHandlerResult onLayerChange();
 
   /* The previous key for a decision. A key not yet in a report counts, with the modifiers of the report being built */
   uint16_t decisionPrevious() const;
@@ -133,11 +134,16 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
   struct Pending {
     uint8_t keycode;
     uint8_t flags;   /* the key's own MODS_MASK flags, AltGr folded into Alt */
+    uint8_t layer;   /* the layer that defines the key, 0 for keys without an address */
   };
 
   Pending  pending_[FIFO_SIZE];
   uint8_t  pending_len_ = 0;
   uint16_t previous_    = 0;   /* 0 matches no rule */
+  uint8_t  previous_layer_ = 0;
+
+  /* Forget a key typed on a layer that is off, so it cannot trigger a rule after the layer was left */
+  static bool layerLeft(uint8_t layer);
 };
 
 }

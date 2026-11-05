@@ -531,6 +531,7 @@ EventHandlerResult AltRepeatTrackDygma::onSetup()
 {
   pending_len_ = 0;
   previous_ = 0;
+  previous_layer_ = 0;
   chained_hook = HIDReportObserver::resetHook(observeReport);
   return EventHandlerResult::OK;
 }
@@ -595,6 +596,7 @@ EventHandlerResult AltRepeatTrackDygma::onKeyswitchEvent(Key &mapped_key, KeyAdd
 
   pending_[pending_len_].keycode = keycode;
   pending_[pending_len_].flags = foldFlags(mapped_key.getFlags());
+  pending_[pending_len_].layer = key_addr.isValid() ? Layer.lookupActiveLayer(key_addr) : 0;
   pending_len_++;
   return EventHandlerResult::OK;
 }
@@ -604,6 +606,20 @@ EventHandlerResult AltRepeatTrackDygma::afterEachCycle()
   /* Drop keys that never reached a report this cycle, so a later report cannot commit them with the wrong modifiers */
   if (pending_len_ != 0) {
     pending_len_ = 0;
+  }
+
+  return EventHandlerResult::OK;
+}
+
+bool AltRepeatTrackDygma::layerLeft(uint8_t layer)
+{
+  return layer != 0 && !Layer.isActive(layer);
+}
+
+EventHandlerResult AltRepeatTrackDygma::onLayerChange()
+{
+  if (previous_ != 0 && layerLeft(previous_layer_)) {
+    previous_ = 0;
   }
 
   return EventHandlerResult::OK;
@@ -625,6 +641,11 @@ uint16_t AltRepeatTrackDygma::decisionPrevious() const
   };
 
   const Pending &newest = pending_[pending_len_ - 1];
+
+  if (layerLeft(newest.layer)) {
+    return 0;
+  }
+
   uint8_t flags = newest.flags;
 
   for (const auto &mod : MODS) {
@@ -672,7 +693,9 @@ void AltRepeatTrackDygma::commitReport(uint8_t id, const void *data, int len)
     int byte = 1 + keycode / 8;
 
     if (byte < len && (report[byte] & (1 << (keycode % 8)))) {
-      previous_ = (uint16_t)((flags << 8) | keycode);
+      /* A key whose layer turned off before its report reached the host is forgotten at once */
+      previous_ = layerLeft(pending_[i].layer) ? 0 : (uint16_t)((flags << 8) | keycode);
+      previous_layer_ = pending_[i].layer;
     } else {
       pending_[kept++] = pending_[i];
     }
