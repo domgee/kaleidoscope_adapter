@@ -30,11 +30,14 @@
 #include "SuperkeysHandler.h"
 
 #include "KeyRoleManager.h"
+#include "AltRepeatDygma.h"
+#include "CombosDygma.h"
 
 #define DEFAULT_HOLD_TIMEOUT_MS              250
 #define DEFAULT_OVERLAP_THRESHOLD            80
 #define DEFAULT_MINIMUM_HOLD_TIME_MS         50
 #define DEFAULT_MINIMUM_PRIOR_INTERVAL_MS    75
+#define MAX_QUICK_TAP_TERM_MS                1000
 
 namespace kaleidoscope {
 namespace plugin {
@@ -69,6 +72,7 @@ EventHandlerResult Qukeys::onKeyswitchEvent(Key& key, KeyAddr k, uint8_t key_sta
     // release event delayed.
     if (keyToggledOff(key_state) && event_queue_.length() == 1 &&
         k != event_queue_.addr(0) && !isModifierKey(key)) {
+      noteTapRelease(k, Runtime.millisAtCycleStart());
       return EventHandlerResult::OK;
     }
     // If we can't trivially ignore the event, just add it to the queue.
@@ -193,6 +197,12 @@ bool Qukeys::processQueue() {
     return true;
   }
 
+  /* Send the tap key at once and keep it held when this press repeats a tap within the quick tap term */
+  if (quickTapDue(queue_head_addr)) {
+    flushEvent(queue_head_.primary_key, true);
+    return true;
+  }
+
   // Now we know that the first event is a key press, and that it's a qukey. In
   // addition, `queue_head_` now contains the primary and secondary Key values
   // for that qukey. As long as the Qukey is at the head of the event queue, we
@@ -213,7 +223,8 @@ bool Qukeys::processQueue() {
   if (!Runtime.hasTimeExpired(prior_keypress_timestamp_,
                               p_Qukeys_config->minimum_prior_interval) &&
       !qukey_is_spacecadet) {
-    flushEvent(queue_head_.primary_key);
+    flushEvent(queue_head_.primary_key, true);
+    return true;
   }
 
   // Now we search the queue for events that will let us decide if the qukey
@@ -247,7 +258,7 @@ bool Qukeys::processQueue() {
       if (next_keypress_index == 0 || p_Qukeys_config->overlap_threshold == 0) {
         Key event_key = qukey_is_spacecadet ?
                         queue_head_.alternate_key : queue_head_.primary_key;
-        flushEvent(event_key);
+        flushEvent(event_key, !qukey_is_spacecadet);
         return true;
       }
       // Now we know the qukey has been released, but we need to check to see if
@@ -263,7 +274,7 @@ bool Qukeys::processQueue() {
       // The subsequent key was held long enough that the qukey can now be
       // flushed in its primary state. We're treating the rollover as normal
       // typing rollover, not deliberate chording.
-      flushEvent(queue_head_.primary_key);
+      flushEvent(queue_head_.primary_key, true);
       return true;
     }
 
@@ -295,7 +306,7 @@ bool Qukeys::processQueue() {
   // queue fills up. We could get multiple events in the same cycle, so this is
   // necessary to avoid reading and writing past the end of the array.
   if (event_queue_.isFull()) {
-    flushEvent(queue_head_.primary_key);
+    flushEvent(queue_head_.primary_key, !qukey_is_spacecadet);
     return true;
   }
 
@@ -309,10 +320,31 @@ bool Qukeys::processQueue() {
 
 
 // Flush one event from the head of the queue, with the specified Key value.
-void Qukeys::flushEvent(Key event_key) {
+void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
   // First we record the address and state of the event:
   KeyAddr queue_head_addr = event_queue_.addr(0);
   uint8_t keyswitch_state = event_queue_.isRelease(0) ? WAS_PRESSED : IS_PRESSED;
+
+  /* Track the last tap for quick tap. Any other press flush ends it, because that key reached the host between the tap and a re-press */
+  uint32_t head_ms = widenTimestamp(event_queue_.timestamp(0));
+
+  if (event_queue_.isRelease(0)) {
+    noteTapRelease(queue_head_addr, head_ms);
+  } else {
+    /* Keep a latch that belongs to a later press of this address */
+    if (queue_head_addr == latch_addr_ && !isBefore(head_ms, latch_ms_)) {
+      latch_addr_ = KeyAddr();
+    }
+
+    /* A combo action replayed at its anchor is no tap */
+    if (quick_tap_arms && quickTapTerm() != 0 && !Combos.ownsAddress(queue_head_addr)) {
+      tap_addr_ = queue_head_addr;
+      tap_released_ = false;
+      tap_press_ms_ = head_ms;
+    } else {
+      tap_addr_ = KeyAddr();
+    }
+  }
 
   // If the flushed event is a keypress of a printable symbol, record its
   // timestamp. This lets us suppress some unintended alternate values seen by
@@ -506,6 +538,89 @@ bool Qukeys::isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const {
   return false;
 }
 
+/* Latch a press that directly follows a press of the same address, unless that earlier press went into a combo. Judge the latch when
+ * this press reaches the queue head, where the earlier tap is already flushed. Keep the physical time, so a press Combos held back
+ * keeps its timing */
+void Qukeys::notePhysicalPress(KeyAddr k)
+{
+  if (k == last_press_addr_ && !Combos.ownsAddress(k)) {
+    latch_addr_ = k;
+    latch_ms_ = Runtime.millisAtCycleStart();
+  } else if (k == latch_addr_) {
+    /* Drop a latch whose press never reached the queue, such as a combo member */
+    latch_addr_ = KeyAddr();
+  }
+
+  last_press_addr_ = k;
+}
+
+bool Qukeys::quickTapDue(KeyAddr k)
+{
+  if (k != latch_addr_) {
+    return false;
+  }
+
+  /* Leave the latch to its own press. An earlier press of this address reaches the head first when a pending qukey held the queue up */
+  if (isBefore(widenTimestamp(event_queue_.timestamp(0)), latch_ms_)) {
+    return false;
+  }
+
+  latch_addr_ = KeyAddr();
+
+  uint16_t term = quickTapTerm();
+
+  return term != 0 && k == tap_addr_ && tap_released_ && !isModifierKey(queue_head_.primary_key) && latch_ms_ - tap_release_ms_ < term;
+}
+
+/* Count a tap only when its key came up within the hold timeout */
+void Qukeys::noteTapRelease(KeyAddr k, uint32_t release_ms)
+{
+  if (k != tap_addr_ || tap_released_) {
+    return;
+  }
+
+  if (release_ms - tap_press_ms_ < p_Qukeys_config->hold_timeout) {
+    tap_released_ = true;
+    tap_release_ms_ = release_ms;
+  } else {
+    tap_addr_ = KeyAddr();
+  }
+}
+
+void Qukeys::resetQuickTap()
+{
+  tap_addr_ = KeyAddr();
+  tap_released_ = false;
+  last_press_addr_ = KeyAddr();
+  latch_addr_ = KeyAddr();
+}
+
+/* Cap the term at the hold timeout as QMK caps QUICK_TAP_TERM at TAPPING_TERM */
+uint16_t Qukeys::quickTapTerm() const
+{
+  if (p_QuickTap_config == nullptr) {
+    return 0;
+  }
+
+  uint16_t term = p_QuickTap_config->quick_tap_term;
+
+  return term < p_Qukeys_config->hold_timeout ? term : p_Qukeys_config->hold_timeout;
+}
+
+/* Widen a queue timestamp to 32 bits. A queued event is at most a hold timeout old, well under 65536 ms */
+uint32_t Qukeys::widenTimestamp(uint16_t timestamp)
+{
+  uint32_t now = Runtime.millisAtCycleStart();
+
+  return now - (uint16_t)((uint16_t)now - timestamp);
+}
+
+/* Order two times wrap-safe, so the comparison holds across the 32-bit millis wrap */
+bool Qukeys::isBefore(uint32_t a, uint32_t b)
+{
+  return (int32_t)(a - b) < 0;
+}
+
 
 // -----------------------------------------------------------------------------
 
@@ -529,9 +644,27 @@ bool isModifierKey(Key key) {
   return false;
 }
 
+/* Read one decimal of 0 to MAX_QUICK_TAP_TERM_MS followed by the end of the line. Reject anything else */
+static bool readQuickTapTerm(uint16_t &term)
+{
+  if (!AltRepeatDygma::readValue(term) || term > MAX_QUICK_TAP_TERM_MS) {
+    return false;
+  }
+
+  int c = AltRepeatDygma::peekWait();
+
+  while (c == ' ') {
+    Runtime.serialPort().read();
+    c = AltRepeatDygma::peekWait();
+  }
+
+  return c == '\n';
+}
+
 EventHandlerResult Qukeys::onFocusEvent(const char *command)
 {
-  if (::Focus.handleHelp(command, PSTR("qukeys.holdTimeout\nqukeys.overlapThreshold\nqukeys.minimumHoldTime\nqukeys.minimumPriorInterval")))
+  if (::Focus.handleHelp(command, PSTR("qukeys.holdTimeout\nqukeys.overlapThreshold\nqukeys.minimumHoldTime\nqukeys.minimumPriorInterval\n"
+                                       "qukeys.quickTapTerm")))
     return EventHandlerResult::OK;
 
   if (strncmp_P(command, PSTR("qukeys."), 7) != 0)
@@ -604,6 +737,33 @@ EventHandlerResult Qukeys::onFocusEvent(const char *command)
     }
   }
 
+  if (strcmp_P(command + 7, PSTR("quickTapTerm")) == 0)
+  {
+    if (::Focus.isEOL())
+    {
+      ::Focus.send(p_QuickTap_config->quick_tap_term);
+    }
+    else
+    {
+      uint16_t term = 0;
+
+      if (readQuickTapTerm(term))
+      {
+        mem_quick_tap_term_save( term );
+        resetQuickTap();
+      }
+      else
+      {
+        /* Read the rest of a rejected line here, because FocusSerial::drain does not wait for bytes still in transit */
+        for (int c = AltRepeatDygma::peekWait(); c >= 0 && c != '\n'; c = AltRepeatDygma::peekWait()) {
+          Runtime.serialPort().read();
+        }
+
+        ::Focus.send("error");
+      }
+    }
+  }
+
   return EventHandlerResult::EVENT_CONSUMED;
 }
 
@@ -632,6 +792,15 @@ EventHandlerResult Qukeys::onSetup()
   if( p_Qukeys_config->minimum_prior_interval > 254 )
   {
     mem_minimum_prior_interval_save( DEFAULT_MINIMUM_PRIOR_INTERVAL_MS );
+  }
+
+  result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_QUICKTAP, (const void **)&p_QuickTap_config );
+  ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
+
+  /* Start with quick tap off. Erased flash reads 0xFFFF */
+  if( p_QuickTap_config->quick_tap_term > MAX_QUICK_TAP_TERM_MS )
+  {
+    mem_quick_tap_term_save( 0 );
   }
 
   return EventHandlerResult::OK;
@@ -675,6 +844,16 @@ void Qukeys::mem_minimum_prior_interval_save( uint8_t minimum_prior_interval )
 
     result = kbdfal_ll_memory_data_save( &p_Qukeys_config->minimum_prior_interval, &minimum_prior_interval, sizeof(p_Qukeys_config->minimum_prior_interval) );
     ASSERT_DYGMA( result == RESULT_OK, "minimum_prior_interval failed" );
+
+    UNUSED( result );
+}
+
+void Qukeys::mem_quick_tap_term_save( uint16_t quick_tap_term )
+{
+    result_t result = RESULT_ERR;
+
+    result = kbdfal_ll_memory_data_save( &p_QuickTap_config->quick_tap_term, &quick_tap_term, sizeof(p_QuickTap_config->quick_tap_term) );
+    ASSERT_DYGMA( result == RESULT_OK, "quick_tap_term failed" );
 
     UNUSED( result );
 }

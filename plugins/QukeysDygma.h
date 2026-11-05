@@ -113,6 +113,13 @@ class Qukeys : public kaleidoscope::Plugin {
 
     } Qukeys_config_t;
 
+    /* Quick tap gets its own block, appended to config_cache_t, because Qukeys_config_t is packed with no spare byte */
+    typedef struct PACK
+    {
+        /* A qukey pressed again less than this many ms after its tap's release sends its tap key at once. 0 = off */
+        uint16_t quick_tap_term;
+    } QuickTap_config_t;
+
  public:
   // Methods for turning the plugin on and off.
   void activate() {
@@ -226,6 +233,9 @@ class Qukeys : public kaleidoscope::Plugin {
     return false;
   }
 
+  /* Note a genuine physical key press. CombosDygma calls this for every one, before any plugin can consume it */
+  void notePhysicalPress(KeyAddr k);
+
   // Kaleidoscope hook functions.
   EventHandlerResult onKeyswitchEvent(Key &mapped_key,
                                       KeyAddr key_addr,
@@ -291,18 +301,38 @@ class Qukeys : public kaleidoscope::Plugin {
     Key alternate_key{Key_Transparent};
   } queue_head_;
 
+  const QuickTap_config_t * p_QuickTap_config{nullptr};
+
+  /* The last qukey press flushed as a tap, and the time of its release when that came within the hold timeout */
+  KeyAddr  tap_addr_;
+  bool     tap_released_{false};
+  uint32_t tap_press_ms_{0};
+  uint32_t tap_release_ms_{0};
+
+  /* The last genuine physical press, and a press of the same address right after it with its physical time */
+  KeyAddr  last_press_addr_;
+  KeyAddr  latch_addr_;
+  uint32_t latch_ms_{0};
+
   // Internal helper methods.
   bool processQueue();
-  void flushEvent(Key event_key);
+  void flushEvent(Key event_key, bool quick_tap_arms = false);
   bool isQukey(KeyAddr k);
   bool isDualUseKey(Key key);
   bool releaseDelayed(uint16_t overlap_start, uint16_t overlap_end) const;
   bool isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const;
+  bool quickTapDue(KeyAddr k);
+  void noteTapRelease(KeyAddr k, uint32_t release_ms);
+  void resetQuickTap();
+  uint16_t quickTapTerm() const;
+  static uint32_t widenTimestamp(uint16_t timestamp);
+  static bool isBefore(uint32_t a, uint32_t b);
 
   void mem_hold_timeout_save( uint16_t hold_timeout );
   void mem_overlap_threshold_save( uint8_t overlap_threshold );
   void mem_minimum_hold_time_save( uint8_t minimum_hold_time );
   void mem_minimum_prior_interval_save( uint8_t minimum_prior_interval );
+  void mem_quick_tap_term_save( uint16_t quick_tap_term );
 };
 
 // This function returns true for any key that we expect to be used chorded with

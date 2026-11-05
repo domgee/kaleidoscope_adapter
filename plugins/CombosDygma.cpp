@@ -550,6 +550,12 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
 
   if (!key_addr.isValid()) return EventHandlerResult::OK;
 
+  /* Quick tap relies on this. Report every genuine physical press to Qukeys before this plugin or a later one can consume it */
+  if (keyToggledOn(key_state) && !keyRoleManager.isReplayingQueuedEvent())
+  {
+    qukeys.notePhysicalPress(key_addr);
+  }
+
   if (p_combos_config == nullptr) return EventHandlerResult::OK;
 
   /* --- addresses we already released to the chain --------------------- */

@@ -68,7 +68,7 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   static bool previousAllowed(uint16_t previous);
   static bool outputAllowed(uint16_t output);
 
-  /* Focus readers, shared with KeyOverrides. Wait for a byte as Stream::timedPeek does, and read one decimal of at most 0xFFFF */
+  /* Focus readers, shared with KeyOverrides and Qukeys. Wait for a byte as Stream::timedPeek does, and read one decimal of at most 0xFFFF */
   static int peekWait();
   static bool readValue(uint16_t &value);
 
