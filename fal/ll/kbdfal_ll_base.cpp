@@ -26,6 +26,7 @@
 #include "EEPROMKeymapDygma.h"
 #include "kbdfal_ll_base.h"
 #include "KbdInterface.h"
+#include "LayerHoldModsDygma.h"
 #include "LEDControlDygma.h"
 #include "MouseKeysDygma.h"
 #include "OneShotDygma.h"
@@ -64,6 +65,9 @@ KALEIDOSCOPE_INIT_PLUGINS
     Combos,
     CapsWordTrigger, Autoshift,
     keyRoleManager,
+    /*LayerHoldMods follows keyRoleManager to see resolved Qukeys replays and Superkeys
+      deliveries, and strips the hold flag before KbdInterface matches exact raw values*/
+    LayerHoldMods,
     LEDControl, KeyboardFocus, DynamicMacros,
     /*SideFlash,*/ Focus, MouseKeys, OneShot, LayerFocus,
     HostPowerManagement,
