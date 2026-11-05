@@ -26,6 +26,7 @@
 #include "kaleidoscope/layers.h"
 #include "KeyboardioHID.h"
 #include "KeyRoleManager.h"
+#include "LayerHoldModsDygma.h"
 #include "QukeysDygma.h"
 
 namespace kaleidoscope {
@@ -69,6 +70,21 @@ EventHandlerResult AltRepeatRepairDygma::onKeyswitchEvent(Key &mapped_key, KeyAd
 {
   AltRepeat.repairCache(key_addr, key_state);
   return EventHandlerResult::OK;
+}
+
+Key AltRepeatDygma::substitutedOutput(KeyAddr key_addr) const
+{
+  if (!key_addr.isValid()) {
+    return Key_NoKey;
+  }
+
+  uint8_t offset = key_addr.toInt();
+
+  if (offset >= MAX_TRACKED_KEYS) {
+    return Key_NoKey;
+  }
+
+  return active_out_[offset];
 }
 
 EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
@@ -211,8 +227,15 @@ bool AltRepeatDygma::outputAllowed(uint16_t output)
     return false;
   }
 
-  /* A layer hold shortcut needs its layer key, which an output does not have */
-  return (output & 0xE000) != 0x2000;
+  if ((output & LayerHoldModsDygma::RAW_MASK) != LayerHoldModsDygma::RAW_HOLD) {
+    return true;
+  }
+
+  /* Take a layer hold shortcut only in the shape LayerHoldMods registers, with a modifier and a typing key */
+  uint8_t mods = (output >> 8) & LayerHoldModsDygma::MODS_MASK;
+  uint8_t keycode = output & 0xFF;
+
+  return mods != 0 && keycode >= HID_KEYBOARD_A_AND_A && keycode <= HID_LAST_KEY;
 }
 
 /* ------------------------------------------------------------------------- */

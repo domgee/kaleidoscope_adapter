@@ -17,6 +17,7 @@
 
 #include "LayerHoldModsDygma.h"
 
+#include "AltRepeatDygma.h"
 #include "CombosDygma.h"
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
@@ -86,8 +87,13 @@ bool LayerHoldModsDygma::registerHold(Key key, KeyAddr key_addr) {
 
   uint8_t owner = Layer.lookupActiveLayer(key_addr);
 
-  /* Let only the layer that defines the key own it. Keep Superkey actions, combo outputs, stale replays and the default layer plain */
-  if (owner == 0 || owner >= MAX_LAYERS || Layer.getKey(owner, key_addr).getRaw() != key.getRaw()) {
+  if (owner == 0 || owner >= MAX_LAYERS) {
+    return false;
+  }
+
+  /* Let only the layer that defines the key own it, directly or through the previous-key rule that replaced it on that layer.
+   * Keep Superkey actions, combo outputs, stale replays and the default layer plain */
+  if (Layer.getKey(owner, key_addr).getRaw() != key.getRaw() && AltRepeat.substitutedOutput(key_addr).getRaw() != key.getRaw()) {
     return false;
   }
 

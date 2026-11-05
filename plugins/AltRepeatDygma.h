@@ -56,6 +56,9 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   /* Put a replaced output back into the live keymap when a new press refreshed it while the earlier release is still queued */
   void repairCache(KeyAddr key_addr, uint8_t key_state);
 
+  /* The output a rule put on this address at its last replayed press, Key_NoKey when none did */
+  Key substitutedOutput(KeyAddr key_addr) const;
+
   static bool previousAllowed(uint16_t previous);
   static bool outputAllowed(uint16_t output);
 
