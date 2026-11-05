@@ -233,9 +233,14 @@ EventHandlerResult AltRepeatDygma::onFocusEvent(const char *command)
     sendRules();
   } else if (readRules()) {
     cfgmem_config_save(&staging_);
+  } else {
+    /* Read the rest of a rejected line here, because FocusSerial::drain does not wait for bytes still in transit */
+    for (int c = peekWait(); c >= 0 && c != '\n'; c = peekWait()) {
+      Runtime.serialPort().read();
+    }
   }
 
-  /* A rejected write keeps the old table. FocusSerial drains the rest of the line */
+  /* Keep the old table on a rejected write and leave the newline for FocusSerial */
   return EventHandlerResult::EVENT_CONSUMED;
 }
 
