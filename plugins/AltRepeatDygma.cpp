@@ -89,12 +89,17 @@ bool AltRepeatDygma::ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) cons
 
 void AltRepeatDygma::keyTyped(KeyAddr key_addr)
 {
-  if (!repeat_valid_ || repeat_press_) {
+  if (!repeat_valid_) {
     return;
   }
 
-  /* Keep a later delivery of the output at its own address, such as a Superkeys timeline injection */
-  if (key_addr.isValid() && key_addr.toInt() == repeat_offset_ && ruleOutputAt(key_addr, repeat_output_, repeat_layer_)) {
+  /* Keep what the repeat key sends, also a Superkey output's tap or hold that Superkeys injects there later */
+  if (key_addr.isValid() && key_addr.toInt() == repeat_offset_ && repeat_at_addr_) {
+    return;
+  }
+
+  /* Keep the keys a macro output injects without an address */
+  if (!key_addr.isValid() && repeat_press_) {
     return;
   }
 
@@ -149,13 +154,14 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
 
   Key output = Key_NoKey;
   uint8_t layer = 0;
+  bool repeats = false;
 
   if (canReplace(mapped_key, key_addr)) {
     layer = Layer.lookupActiveLayer(key_addr);
 
     if (repeat_valid_ && repeat_offset_ == offset && repeat_layer_ == layer) {
       output = repeat_output_;
-      repeat_press_ = true;
+      repeats = true;
     } else {
       const rule_t *rule = findRule(layer, offset);
 
@@ -167,11 +173,17 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
           repeat_offset_ = offset;
           repeat_layer_ = layer;
           repeat_output_ = output;
-          repeat_press_ = true;
+          repeats = true;
         }
       }
     }
   }
+
+  if (offset == repeat_offset_) {
+    repeat_at_addr_ = repeats;
+  }
+
+  repeat_press_ = repeats;
 
   active_out_[offset] = output;
 
@@ -467,6 +479,7 @@ EventHandlerResult AltRepeatDygma::onSetup()
 
   memset(from_rule_, 0, sizeof(from_rule_));
   repeat_valid_ = false;
+  repeat_at_addr_ = false;
   repeat_press_ = false;
 
   /* Erased flash or another layout. Runs once after a flash */

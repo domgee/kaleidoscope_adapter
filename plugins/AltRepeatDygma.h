@@ -61,7 +61,7 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
    * replaced it since */
   bool ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) const;
 
-  /* End the repeat when a key other than the repeat's own output types. AltRepeatTrack calls it for each key that updates history */
+  /* End the repeat when a key from another address types. AltRepeatTrack calls it for each key that updates history */
   void keyTyped(KeyAddr key_addr);
 
   static bool previousAllowed(uint16_t previous);
@@ -83,7 +83,10 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
   uint8_t repeat_layer_  = 0;
   Key     repeat_output_ = Key_NoKey;
 
-  /* True from a repeat output's press until the next event that is not injected. Keys that press injects keep the repeat */
+  /* True while the last replayed press at repeat_offset_ sent the repeat output, so keys injected at the address keep the repeat */
+  bool repeat_at_addr_ = false;
+
+  /* True from a repeat output's press until the next event that is not injected, so the keys of a macro output keep the repeat */
   bool repeat_press_ = false;
 
   /* A write is parsed here in full and saved only when every value is valid */
