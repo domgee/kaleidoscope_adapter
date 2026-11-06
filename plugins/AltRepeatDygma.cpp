@@ -28,6 +28,7 @@
 #include "KeyRoleManager.h"
 #include "LayerHoldModsDygma.h"
 #include "QukeysDygma.h"
+#include "SwapHandsDygma.h"
 
 namespace kaleidoscope {
 namespace plugin {
@@ -249,6 +250,10 @@ bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
     return false;
   }
 
+  if (SwapHandsDygma::isSwapCode(raw)) {
+    return false;
+  }
+
   if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST) {
     return false;
   }
@@ -296,6 +301,10 @@ bool AltRepeatDygma::outputAllowed(uint16_t output)
   }
 
   if (output >= ranges::AUTOSHIFT_FIRST && output <= ranges::AUTOSHIFT_LAST) {
+    return false;
+  }
+
+  if (SwapHandsDygma::isSwapCode(output)) {
     return false;
   }
 

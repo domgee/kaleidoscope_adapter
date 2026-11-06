@@ -21,6 +21,7 @@
 #include "KbdInterface.h"
 #include "Kaleidoscope.h"
 #include "LEDControlDygma.h"
+#include "SwapHandsDygma.h"
 
 namespace kaleidoscope
 {
@@ -83,10 +84,12 @@ namespace plugin
         /* Populate Keyboard API key structure */
         kbdapi_key.type = ( p_key_def != NULL ) ? p_key_def->kbdapi_key : KBDAPI_KEY_TYPE_UNSPECIFIED;
 
-        /* Fill the key coordinates */
-        kbdapi_key.coord.is_valid = key_addr.isValid();
-        kbdapi_key.coord.col = key_addr.col();
-        kbdapi_key.coord.row = key_addr.row();
+        /* Fill the physical key coordinates, which differ from the address while swap hands mirrors the key */
+        KeyAddr phys_addr = SwapHands.physicalFor( key_addr );
+
+        kbdapi_key.coord.is_valid = phys_addr.isValid();
+        kbdapi_key.coord.col = phys_addr.col();
+        kbdapi_key.coord.row = phys_addr.row();
 
         kbdapi_key.is_pressed = keyIsPressed(keyState);
         kbdapi_key.was_pressed = keyWasPressed(keyState);

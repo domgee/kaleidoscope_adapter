@@ -595,6 +595,15 @@ void Qukeys::resetQuickTap()
   latch_addr_ = KeyAddr();
 }
 
+uint16_t Qukeys::holdTimeout() const
+{
+  if (p_Qukeys_config == nullptr || p_Qukeys_config->hold_timeout > 60000) {
+    return DEFAULT_HOLD_TIMEOUT_MS;
+  }
+
+  return p_Qukeys_config->hold_timeout;
+}
+
 /* Cap the term at the hold timeout as QMK caps QUICK_TAP_TERM at TAPPING_TERM */
 uint16_t Qukeys::quickTapTerm() const
 {

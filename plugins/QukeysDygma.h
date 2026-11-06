@@ -233,6 +233,20 @@ class Qukeys : public kaleidoscope::Plugin {
     return false;
   }
 
+  /* Return true when any queued event is at this address */
+  bool hasQueuedEvent(KeyAddr k) const {
+    for (uint8_t i{0}; i < event_queue_.length(); ++i) {
+      if (event_queue_.addr(i) == k) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /* Return the hold timeout in ms. SwapHands uses it for its own tap/hold decisions */
+  uint16_t holdTimeout() const;
+
   /* Note a genuine physical key press. Call it from CombosDygma for every one, before any plugin can consume it */
   void notePhysicalPress(KeyAddr k);
 

@@ -33,6 +33,7 @@
 #include "LEDControlDygma.h"
 #include "MouseKeysDygma.h"
 #include "OneShotDygma.h"
+#include "SwapHandsDygma.h"
 
 // Kaleidoscope
 #include "Kaleidoscope-FocusSerial.h"
@@ -61,6 +62,9 @@ KALEIDOSCOPE_INIT_PLUGINS
     /*ConditionalLayers follows EEPROMKeymap and precedes every other onLayerChange consumer, so the outer layer change reaches
       them after the rules applied*/
     ConditionalLayers,
+    /*SwapHands precedes every key plugin. Its scanner router mirrors addresses before the core sees an event, and its hook turns SH_T
+      codes into their tap key and consumes the other swap codes*/
+    SwapHands,
     /*AltRepeatRepair precedes Combos, which may buffer a re-press before AltRepeat sees it*/
     AltRepeatRepair,
     /*CapsWord trigger and Autoshift — must precede keyRoleManager so their own
@@ -83,7 +87,8 @@ KALEIDOSCOPE_INIT_PLUGINS
       precedes OneShot, LEDControl, DynamicMacros and MouseKeys so it sees the keys they consume as other keys*/
     KeyOverrides,
     LEDControl, KeyboardFocus, DynamicMacros,
-    /*SideFlash,*/ Focus, MouseKeys, OneShot, LayerFocus,
+    /*SwapHandsOneShot judges SH_OS on the same resolved keys OneShot sees*/
+    /*SideFlash,*/ Focus, MouseKeys, SwapHandsOneShot, OneShot, LayerFocus,
     HostPowerManagement,
     /*Dygma base plugin*/
     BaseDygma,

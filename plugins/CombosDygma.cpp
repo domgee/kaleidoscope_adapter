@@ -24,6 +24,7 @@
 #include "kaleidoscope/layers.h"
 #include "KeyRoleManager.h"
 #include "QukeysDygma.h"
+#include "SwapHandsDygma.h"
 
 /* ---------------------------------------------------------------------------
  * TEMPORARY debug logging, same shape as the Autoshift and CapsWord plugins.
@@ -90,6 +91,12 @@ bool CombosDygma::actionAllowed(uint16_t raw) const
   /* An Autoshift code as a combo action makes no sense: the combo has no
    * "hold the base key" gesture to build a shifted form from. */
   if (raw >= ranges::AUTOSHIFT_FIRST && raw <= ranges::AUTOSHIFT_LAST) return false;
+
+  /* Swap keys act only from the keymap */
+  if (SwapHandsDygma::isSwapCode(raw))
+  {
+    return false;
+  }
 
   if (raw == 0) return false;
 
@@ -162,7 +169,16 @@ bool CombosDygma::positionAllowed(KeyAddr key_addr, Key mapped_key) const
   if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST) return false; /* superkey */
   if (raw >= ranges::OVERLAY_KEY && raw <= ranges::OVERLAY_HOLD) return false;        /* overlay  */
 
-  UNUSED(key_addr);
+  /* Refuse swap cells and SH_T taps, which SwapHands already turned into their tap key */
+  if (SwapHands.isTapAt(key_addr))
+  {
+    return false;
+  }
+
+  if (key_addr.isValid() && SwapHandsDygma::isSwapCode(Layer.lookupOnActiveLayer(key_addr).getRaw()))
+  {
+    return false;
+  }
 
   return true;
 }
