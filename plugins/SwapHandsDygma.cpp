@@ -686,6 +686,7 @@ void SwapHandsDygma::drainOne()
     }
 
     deliverPress(entry.phys, entry.ms);
+    queueDeliveredRelease(entry.phys, buffer_, buffer_len_);
 
     /* Judge the rest of the buffer against the new decision, as if it arrived now */
     if (pending_ && buffer_len_ != 0) {
@@ -702,7 +703,7 @@ void SwapHandsDygma::drainOne()
 }
 
 /* Route buffered events again at their original time. Presses and drained releases queue again, other releases may decide */
-void SwapHandsDygma::refeed(const entry_t *entries, uint8_t count)
+void SwapHandsDygma::refeed(entry_t *entries, uint8_t count)
 {
   for (uint8_t i = 0; i < count; ++i) {
     const entry_t &entry = entries[i];
@@ -711,12 +712,36 @@ void SwapHandsDygma::refeed(const entry_t *entries, uint8_t count)
 
     if (!entry.release) {
       routePress(entry.phys, entry.ms);
+
+      if (state(entry.phys) != BUFFERED) {
+        queueDeliveredRelease(entry.phys, entries + i + 1, count - i - 1);
+      }
     } else if (entry.snap == BY_STATE) {
       routeRelease(entry.phys, WAS_PRESSED);
     } else if (pending_ || draining_) {
       append(entry);
     } else {
       replayRelease(entry);
+    }
+  }
+}
+
+/* Turn the buffered release of a press just delivered from the buffer into the queued release of a delivered key, so restoreHeld
+ * keeps the key in every report until that release goes out */
+void SwapHandsDygma::queueDeliveredRelease(KeyAddr phys, entry_t *entries, uint8_t count)
+{
+  uint8_t st = state(phys);
+
+  if (st != NONE && st != SWAPPED) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < count; ++i) {
+    if (entries[i].release && entries[i].phys == phys && entries[i].snap == BY_STATE) {
+      entries[i].snap = st;
+      entries[i].target = st == SWAPPED ? mirror(phys) : phys;
+      setState(phys, NONE);
+      return;
     }
   }
 }
@@ -774,6 +799,7 @@ void SwapHandsDygma::cancelPending()
     } else {
       setState(entry.phys, NONE);
       deliverPress(entry.phys, entry.ms);
+      queueDeliveredRelease(entry.phys, entries + i + 1, count - i - 1);
     }
   }
 

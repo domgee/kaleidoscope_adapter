@@ -184,8 +184,9 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
   void resolveTap(uint8_t idx);
   void startDrain();
   void drainOne();
-  void refeed(const entry_t *entries, uint8_t count);
+  void refeed(entry_t *entries, uint8_t count);
   void replayRelease(const entry_t &entry);
+  void queueDeliveredRelease(KeyAddr phys, entry_t *entries, uint8_t count);
   void restoreHeld();
   void cancelPending();
 
