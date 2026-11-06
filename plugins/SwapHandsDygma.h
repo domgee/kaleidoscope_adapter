@@ -71,7 +71,7 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
   enum KeyState : uint8_t {
     NONE,       /* delivered at its own address, or not pressed */
     SWAPPED,    /* delivered at the mirror address until released */
-    BUFFERED,   /* press waits behind an undecided SH_T or SH_TT */
+    BUFFERED,   /* press waits in the buffer */
     CONTROL,    /* a swap key, never delivered */
     DROPPED,    /* both target addresses were held, press and release dropped */
   };
@@ -83,9 +83,14 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
     OS_ACTIVE,
   };
 
+  /* A queued release of a key whose press was already delivered keeps the state and target it had */
+  static constexpr uint8_t BY_STATE = 0xFF;
+
   struct entry_t {
     KeyAddr  phys;
+    KeyAddr  target;    /* logical address of a delivered key's release */
     bool     release;
+    uint8_t  snap;      /* BY_STATE, or the state of a delivered key at its release */
     uint32_t ms;
   };
 
@@ -112,8 +117,9 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
 
   bool    swap_         = false;
   bool    pending_      = false;   /* an SH_T or SH_TT decision is open */
-  bool    cancel_       = false;   /* an upgrade command cancels the open decision at the next scanBegin */
-  bool    tap_deferred_ = false;   /* the decided tap goes out at the next scanBegin */
+  bool    draining_     = false;   /* the buffer replays one event per scan while new events queue behind it */
+  bool    cancel_       = false;   /* an upgrade command cancels the decision and the buffer at the next scanBegin */
+  bool    tap_deferred_ = false;   /* the decided tap is the next event the drain sends */
   uint8_t pending_ctrl_ = 0;
   uint32_t pending_ms_  = 0;
   uint8_t deferred_kc_  = 0;
@@ -133,7 +139,7 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
 
   tap_t   taps_[MAX_TAPS] = {};   /* emitted taps in emission order */
   uint8_t taps_len_ = 0;
-  bool    emitted_this_scan_ = false;
+  bool    sent_this_scan_ = false;   /* a tap or a buffered event already went out in this scan */
   KeyAddr emitting_addr_;
 
   bool    inj_release_pending_ = false;
@@ -156,10 +162,16 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
   void send(KeyAddr logical, uint8_t key_state, Key key = Key_NoKey);
 
   void routePress(KeyAddr phys, uint32_t press_ms);
+  void deliverPress(KeyAddr phys, uint32_t press_ms);
   void routeHeld(KeyAddr phys, uint8_t key_state);
   void routeRelease(KeyAddr phys, uint8_t key_state);
-  void append(KeyAddr phys, uint32_t ms, bool release);
+  void releaseNow(KeyAddr phys, uint8_t key_state);
+  void append(const entry_t &entry);
+  void appendPress(KeyAddr phys, uint32_t ms);
+  void appendRelease(KeyAddr phys, uint32_t ms, uint8_t snap, KeyAddr target);
+  void makeRoom();
   void expireByClock();
+  bool isSwapCell(KeyAddr phys) const;
 
   int8_t findControl(KeyAddr phys) const;
   void freeControls(KeyAddr phys);
@@ -170,14 +182,17 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
   void startPending(uint8_t idx, uint32_t press_ms);
   void resolveHold();
   void resolveTap(uint8_t idx);
-  void finishDeferredTap();
+  void startDrain();
+  void drainOne();
+  void refeed(const entry_t *entries, uint8_t count);
+  void replayRelease(const entry_t &entry);
+  void restoreHeld();
   void cancelPending();
-  void replayBuffer();
 
   void emitTap(KeyAddr phys, uint8_t kc);
   void releaseInjected();
 
-  void judgeOneShotKey(Key key);
+  bool judgeOneShotKey(Key key);
   void endOneShot();
 };
 

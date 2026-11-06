@@ -66,12 +66,13 @@ EventHandlerResult SwapHandsDygma::onSetup()
 
 bool SwapHandsDygma::active() const
 {
-  return swap_ || pending_ || os_ != OS_OFF || taps_len_ != 0 || inj_release_pending_ || owned_count_ != 0;
+  return swap_ || pending_ || draining_ || os_ != OS_OFF || taps_len_ != 0 || inj_release_pending_ || owned_count_ != 0;
 }
 
 KeyAddr SwapHandsDygma::releaseTarget(KeyAddr phys) const
 {
-  if (!phys.isValid()) {
+  /* While draining a release queues behind the buffer, so its logical bit stays until it is replayed */
+  if (!phys.isValid() || draining_) {
     return KeyAddr();
   }
 
@@ -103,16 +104,16 @@ void SwapHandsDygma::route(KeyAddr phys, uint8_t key_state)
   }
 }
 
-/* Run once per scan before any event. Release last scan's taps, then finish deferred work and deadlines */
+/* Run once per scan before any event. Release last scan's taps, then finish deadlines and send the next buffered event */
 void SwapHandsDygma::scanBegin()
 {
   clock_ = Runtime.millisAtCycleStart();
 
-  if (taps_len_ != 0 || inj_release_pending_ || tap_deferred_) {
+  if (taps_len_ != 0 || inj_release_pending_ || draining_) {
     kbdtimer_check(&wake_timer_);
   }
 
-  emitted_this_scan_ = false;
+  sent_this_scan_ = false;
 
   if (taps_len_ != 0) {
     for (uint8_t i = 0; i < taps_len_; ++i) {
@@ -142,18 +143,27 @@ void SwapHandsDygma::scanBegin()
     releaseInjected();
   }
 
-  if (pending_ && cancel_) {
+  if (cancel_ && (pending_ || draining_)) {
     cancelPending();
   }
 
   cancel_ = false;
 
-  if (pending_ && tap_deferred_) {
-    finishDeferredTap();
+  /* End the drain one scan after its last event, so a new press never shares a report with it */
+  if (draining_ && !tap_deferred_ && buffer_len_ == 0) {
+    draining_ = false;
   }
 
-  if (pending_ && !tap_deferred_ && kbdtimer_check(&decide_timer_)) {
+  if (pending_ && kbdtimer_check(&decide_timer_)) {
     resolveHold();
+  }
+
+  if (draining_ && !sent_this_scan_) {
+    drainOne();
+  }
+
+  if (buffer_len_ != 0) {
+    restoreHeld();
   }
 
   if (os_ == OS_ACTIVE && kbdtimer_check(&os_timer_)) {
@@ -223,20 +233,56 @@ void SwapHandsDygma::send(KeyAddr logical, uint8_t key_state, Key key)
 /* Routing                                                                   */
 /* ------------------------------------------------------------------------- */
 
-void SwapHandsDygma::append(KeyAddr phys, uint32_t ms, bool release)
+void SwapHandsDygma::append(const entry_t &entry)
 {
-  buffer_[buffer_len_].phys = phys;
-  buffer_[buffer_len_].ms = ms;
-  buffer_[buffer_len_].release = release;
-  buffer_len_++;
+  buffer_[buffer_len_++] = entry;
 }
 
-/* Resolve an open decision as hold when the event being routed comes after its hold timeout, also inside a buffer replay */
+void SwapHandsDygma::appendPress(KeyAddr phys, uint32_t ms)
+{
+  entry_t entry;
+
+  entry.phys = phys;
+  entry.release = false;
+  entry.snap = BY_STATE;
+  entry.ms = ms;
+  append(entry);
+  setState(phys, BUFFERED);
+}
+
+void SwapHandsDygma::appendRelease(KeyAddr phys, uint32_t ms, uint8_t snap, KeyAddr target)
+{
+  entry_t entry;
+
+  entry.phys = phys;
+  entry.target = target;
+  entry.release = true;
+  entry.snap = snap;
+  entry.ms = ms;
+  append(entry);
+}
+
+/* Free a buffer slot. A full buffer forces an open decision as hold, then sends one more buffered event in this scan */
+void SwapHandsDygma::makeRoom()
+{
+  if (pending_) {
+    resolveHold();
+  } else {
+    drainOne();
+  }
+}
+
+/* Resolve an open decision as hold when the event being routed comes after its hold timeout, also for a refed buffer */
 void SwapHandsDygma::expireByClock()
 {
-  if (pending_ && !tap_deferred_ && clock_ - pending_ms_ >= ::qukeys.holdTimeout()) {
+  if (pending_ && clock_ - pending_ms_ >= ::qukeys.holdTimeout()) {
     resolveHold();
   }
+}
+
+bool SwapHandsDygma::isSwapCell(KeyAddr phys) const
+{
+  return isSwapCode(Layer.lookupOnActiveLayer(phys).getRaw());
 }
 
 void SwapHandsDygma::routePress(KeyAddr phys, uint32_t press_ms)
@@ -260,21 +306,20 @@ void SwapHandsDygma::routePress(KeyAddr phys, uint32_t press_ms)
 
   expireByClock();
 
-  while (pending_) {
+  while (pending_ || draining_) {
     if (buffer_len_ < BUFFER_CAPACITY) {
-      append(phys, press_ms, false);
-      setState(phys, BUFFERED);
+      appendPress(phys, press_ms);
       return;
     }
 
-    /* A full buffer forces the decision */
-    if (tap_deferred_) {
-      finishDeferredTap();
-    } else {
-      resolveHold();
-    }
+    makeRoom();
   }
 
+  deliverPress(phys, press_ms);
+}
+
+void SwapHandsDygma::deliverPress(KeyAddr phys, uint32_t press_ms)
+{
   uint16_t raw = Layer.lookupOnActiveLayer(phys).getRaw();
 
   if (isSwapCode(raw)) {
@@ -319,20 +364,45 @@ void SwapHandsDygma::routeRelease(KeyAddr phys, uint8_t key_state)
 {
   expireByClock();
 
-  /* Never drop a release while its press is still buffered. Pressing and releasing a key inside the decision makes it a hold */
-  while (state(phys) == BUFFERED && pending_) {
-    if (tap_deferred_) {
-      if (buffer_len_ < BUFFER_CAPACITY) {
-        append(phys, clock_, true);
-        return;
-      }
-
-      finishDeferredTap();
-    } else {
+  /* Never drop a release while its press is still buffered. Pressing and releasing a key inside the decision makes it a hold,
+   * except for a swap key */
+  while (state(phys) == BUFFERED && (pending_ || draining_)) {
+    if (pending_ && !isSwapCell(phys)) {
       resolveHold();
+    } else if (buffer_len_ < BUFFER_CAPACITY) {
+      appendRelease(phys, clock_, BY_STATE, KeyAddr());
+      return;
+    } else {
+      makeRoom();
     }
   }
 
+  /* Queue the release of a delivered key behind the drain, and keep the key in this scan's report */
+  uint8_t st = state(phys);
+
+  while (draining_ && (st == NONE || st == SWAPPED || st == CONTROL)) {
+    if (buffer_len_ < BUFFER_CAPACITY) {
+      KeyAddr target = st == SWAPPED ? mirror(phys) : phys;
+
+      appendRelease(phys, clock_, st, target);
+
+      if (st != CONTROL) {
+        send(target, IS_PRESSED | WAS_PRESSED);
+      }
+
+      setState(phys, NONE);
+      return;
+    }
+
+    makeRoom();
+    st = state(phys);
+  }
+
+  releaseNow(phys, key_state);
+}
+
+void SwapHandsDygma::releaseNow(KeyAddr phys, uint8_t key_state)
+{
   uint8_t st = state(phys);
 
   if (st == BUFFERED || st == DROPPED) {
@@ -444,7 +514,7 @@ void SwapHandsDygma::controlRelease(KeyAddr phys)
       endOneShot();
     }
   } else if (code != ranges::SWAP_HANDS_TOGGLE) {
-    if (pending_ && pending_ctrl_ == idx && !tap_deferred_) {
+    if (pending_ && pending_ctrl_ == idx) {
       resolveTap(idx);
     } else if (controls_[idx].hold) {
       if (code == ranges::SWAP_HANDS_TAP_TOGGLE) {
@@ -486,13 +556,13 @@ void SwapHandsDygma::releaseTapToggleHold(uint8_t idx)
 /* Tap or hold decision for SH_T and SH_TT                                   */
 /* ------------------------------------------------------------------------- */
 
+/* Open a decision. Events already in the buffer stay there as its buffer */
 void SwapHandsDygma::startPending(uint8_t idx, uint32_t press_ms)
 {
   pending_ = true;
-  tap_deferred_ = false;
+  draining_ = false;
   pending_ctrl_ = idx;
   pending_ms_ = press_ms;
-  buffer_len_ = 0;
 
   uint16_t hold_timeout = ::qukeys.holdTimeout();
 
@@ -510,7 +580,7 @@ void SwapHandsDygma::startPending(uint8_t idx, uint32_t press_ms)
 
 void SwapHandsDygma::resolveHold()
 {
-  if (!pending_ || tap_deferred_) {
+  if (!pending_) {
     return;
   }
 
@@ -531,7 +601,7 @@ void SwapHandsDygma::resolveHold()
     swap_ = true;
   }
 
-  replayBuffer();
+  startDrain();
 }
 
 void SwapHandsDygma::resolveTap(uint8_t idx)
@@ -539,6 +609,8 @@ void SwapHandsDygma::resolveTap(uint8_t idx)
   if (!pending_) {
     return;
   }
+
+  pending_ = false;
 
   uint16_t code = controls_[idx].code;
 
@@ -550,82 +622,137 @@ void SwapHandsDygma::resolveTap(uint8_t idx)
       swap_ = !swap_;
       tt_taps_ = 0;
     }
+  } else {
+    uint8_t kc = code - ranges::SWAP_HANDS_TAP_FIRST;
 
-    pending_ = false;
-    replayBuffer();
-    return;
+    /* The tap is this scan's event. When one already went out, the tap goes first in the drain */
+    if (kc != 0 && sent_this_scan_) {
+      tap_deferred_ = true;
+      deferred_kc_ = kc;
+      deferred_phys_ = controls_[idx].phys;
+    } else if (kc != 0) {
+      emitTap(controls_[idx].phys, kc);
+    }
   }
 
-  uint8_t kc = code - ranges::SWAP_HANDS_TAP_FIRST;
-
-  if (kc == 0) {
-    pending_ = false;
-    replayBuffer();
-    return;
-  }
-
-  /* Never press and release a tap in one scan. A second tap in this scan goes out at the next scanBegin, the buffer keeps filling */
-  if (emitted_this_scan_) {
-    kbdtimer_set_ms(&wake_timer_, 1);
-    tap_deferred_ = true;
-    deferred_kc_ = kc;
-    deferred_phys_ = controls_[idx].phys;
-    return;
-  }
-
-  pending_ = false;
-  emitTap(controls_[idx].phys, kc);
-  replayBuffer();
+  startDrain();
 }
 
-void SwapHandsDygma::finishDeferredTap()
+/* Replay the buffer one event per scan, like the Qukeys queue, so the host gets every key in order in its own report */
+void SwapHandsDygma::startDrain()
 {
-  pending_ = false;
-  tap_deferred_ = false;
-  emitTap(deferred_phys_, deferred_kc_);
-  replayBuffer();
+  if (buffer_len_ == 0 && !tap_deferred_ && !sent_this_scan_) {
+    return;
+  }
+
+  draining_ = true;
+  kbdtimer_set_ms(&wake_timer_, 1);
+
+  if (!sent_this_scan_) {
+    drainOne();
+  }
 }
 
-/* Close the decision for an upgrade command. Buffered swap keys stay inert until released, other keys replay unswapped */
-void SwapHandsDygma::cancelPending()
+/* Send the deferred tap or the oldest buffered event. A replayed SH_T or SH_TT opens a decision over the rest of the buffer */
+void SwapHandsDygma::drainOne()
 {
-  pending_ = false;
-  tap_deferred_ = false;
-  controls_[pending_ctrl_].code = 0;
+  sent_this_scan_ = true;
+  kbdtimer_set_ms(&wake_timer_, 1);
 
-  entry_t entries[BUFFER_CAPACITY];
-  uint8_t count = buffer_len_;
+  if (tap_deferred_) {
+    tap_deferred_ = false;
+    emitTap(deferred_phys_, deferred_kc_);
+    return;
+  }
 
-  memcpy(entries, buffer_, sizeof(entry_t) * count);
-  buffer_len_ = 0;
+  if (buffer_len_ == 0) {
+    return;
+  }
+
+  entry_t entry = buffer_[0];
+
+  buffer_len_--;
+  memmove(&buffer_[0], &buffer_[1], sizeof(entry_t) * buffer_len_);
 
   uint32_t saved_clock = clock_;
 
-  for (uint8_t i = 0; i < count; ++i) {
-    KeyAddr phys = entries[i].phys;
+  clock_ = entry.ms;
 
-    clock_ = entries[i].ms;
+  if (entry.release) {
+    replayRelease(entry);
+  } else {
+    if (state(entry.phys) == BUFFERED) {
+      setState(entry.phys, NONE);
+    }
 
-    if (entries[i].release) {
-      routeRelease(phys, WAS_PRESSED);
-    } else if (isSwapCode(Layer.lookupOnActiveLayer(phys).getRaw())) {
-      setState(phys, CONTROL);
-    } else {
-      setState(phys, NONE);
-      routePress(phys, entries[i].ms);
+    deliverPress(entry.phys, entry.ms);
+
+    /* Judge the rest of the buffer against the new decision, as if it arrived now */
+    if (pending_ && buffer_len_ != 0) {
+      entry_t entries[BUFFER_CAPACITY];
+      uint8_t count = buffer_len_;
+
+      memcpy(entries, buffer_, sizeof(entry_t) * count);
+      buffer_len_ = 0;
+      refeed(entries, count);
     }
   }
 
   clock_ = saved_clock;
 }
 
-/* Route every buffered event once, in order, at its original time. A replayed SH_T or SH_TT opens a new decision that buffers
- * the entries after it */
-void SwapHandsDygma::replayBuffer()
+/* Route buffered events again at their original time. Presses and drained releases queue again, other releases may decide */
+void SwapHandsDygma::refeed(const entry_t *entries, uint8_t count)
 {
-  if (buffer_len_ == 0) {
-    return;
+  for (uint8_t i = 0; i < count; ++i) {
+    const entry_t &entry = entries[i];
+
+    clock_ = entry.ms;
+
+    if (!entry.release) {
+      routePress(entry.phys, entry.ms);
+    } else if (entry.snap == BY_STATE) {
+      routeRelease(entry.phys, WAS_PRESSED);
+    } else if (pending_ || draining_) {
+      append(entry);
+    } else {
+      replayRelease(entry);
+    }
   }
+}
+
+void SwapHandsDygma::replayRelease(const entry_t &entry)
+{
+  if (entry.snap == BY_STATE) {
+    releaseNow(entry.phys, WAS_PRESSED);
+  } else if (entry.snap == CONTROL) {
+    controlRelease(entry.phys);
+  } else {
+    send(entry.target, WAS_PRESSED);
+  }
+}
+
+/* Keep delivered keys whose release waits in the buffer in the report, as Qukeys does for its queue */
+void SwapHandsDygma::restoreHeld()
+{
+  for (uint8_t i = 0; i < buffer_len_; ++i) {
+    if (buffer_[i].release && (buffer_[i].snap == NONE || buffer_[i].snap == SWAPPED)) {
+      send(buffer_[i].target, IS_PRESSED | WAS_PRESSED);
+    }
+  }
+}
+
+/* Close the decision and the drain for an upgrade command at once. Buffered swap keys stay inert until released, other keys go
+ * out unswapped */
+void SwapHandsDygma::cancelPending()
+{
+  if (pending_) {
+    controls_[pending_ctrl_].code = 0;
+  }
+
+  pending_ = false;
+  draining_ = false;
+  tap_deferred_ = false;
 
   entry_t entries[BUFFER_CAPACITY];
   uint8_t count = buffer_len_;
@@ -636,18 +763,17 @@ void SwapHandsDygma::replayBuffer()
   uint32_t saved_clock = clock_;
 
   for (uint8_t i = 0; i < count; ++i) {
-    KeyAddr phys = entries[i].phys;
+    const entry_t &entry = entries[i];
 
-    clock_ = entries[i].ms;
+    clock_ = entry.ms;
 
-    if (entries[i].release) {
-      routeRelease(phys, WAS_PRESSED);
+    if (entry.release) {
+      replayRelease(entry);
+    } else if (isSwapCell(entry.phys)) {
+      setState(entry.phys, CONTROL);
     } else {
-      if (state(phys) == BUFFERED) {
-        setState(phys, NONE);
-      }
-
-      routePress(phys, entries[i].ms);
+      setState(entry.phys, NONE);
+      deliverPress(entry.phys, entry.ms);
     }
   }
 
@@ -661,7 +787,7 @@ void SwapHandsDygma::replayBuffer()
 /* Press the tap key at the SH_T key's address. Its release goes out at the next scanBegin, so the host sees the press in a report */
 void SwapHandsDygma::emitTap(KeyAddr phys, uint8_t kc)
 {
-  emitted_this_scan_ = true;
+  sent_this_scan_ = true;
   kbdtimer_set_ms(&wake_timer_, 1);
 
   if (!bitGet(occupied_, phys) && taps_len_ < MAX_TAPS) {
@@ -763,7 +889,7 @@ EventHandlerResult SwapHandsDygma::onFocusEvent(const char *command)
 
     tt_order_len_ = 0;
 
-    if (pending_) {
+    if (pending_ || draining_) {
       cancel_ = true;
     }
 
@@ -809,7 +935,8 @@ bool SwapHandsDygma::isTapAt(KeyAddr addr) const
 /* SH_OS                                                                     */
 /* ------------------------------------------------------------------------- */
 
-/* Judge only presses the router delivered while SH_OS was armed, once each */
+/* Judge only presses the router delivered while SH_OS was armed. Keep the mark after a key that does not use SH_OS up, because a
+ * Superkey sends its cached modifier at the same address before its action */
 void SwapHandsDygma::judgeOneShot(Key key, KeyAddr key_addr, uint8_t key_state)
 {
   if (os_ == OS_OFF || !bitGet(os_mark_, key_addr)) {
@@ -818,17 +945,17 @@ void SwapHandsDygma::judgeOneShot(Key key, KeyAddr key_addr, uint8_t key_state)
 
   if (keyToggledOff(key_state)) {
     bitPut(os_mark_, key_addr, false);
-  } else if (keyToggledOn(key_state)) {
+  } else if (keyToggledOn(key_state) && judgeOneShotKey(key)) {
     bitPut(os_mark_, key_addr, false);
-    judgeOneShotKey(key);
   }
 }
 
-/* Keep SH_OS for modifiers, layer keys, OneShot keys, swap keys and unresolved dual-function keys, as OneShot does */
-void SwapHandsDygma::judgeOneShotKey(Key key)
+/* Keep SH_OS for modifiers, layer keys, OneShot keys, swap keys and unresolved dual-function keys, as OneShot does. Return true
+ * when the key uses SH_OS up */
+bool SwapHandsDygma::judgeOneShotKey(Key key)
 {
   if (os_ == OS_OFF) {
-    return;
+    return false;
   }
 
   uint16_t raw = key.getRaw();
@@ -836,19 +963,19 @@ void SwapHandsDygma::judgeOneShotKey(Key key)
   uint8_t keycode = key.getKeyCode();
 
   if ((flags & (SYNTHETIC | RESERVED)) == 0 && keycode >= HID_KEYBOARD_FIRST_MODIFIER && keycode <= HID_KEYBOARD_LAST_MODIFIER) {
-    return;
+    return false;
   }
 
   if (flags == (SYNTHETIC | SWITCH_TO_KEYMAP)) {
-    return;
+    return false;
   }
 
   if ((raw >= ranges::OS_FIRST && raw <= ranges::OS_LAST) || isSwapCode(raw)) {
-    return;
+    return false;
   }
 
   if ((raw >= ranges::DU_FIRST && raw <= ranges::DU_LAST) || (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST)) {
-    return;
+    return false;
   }
 
   if (os_ == OS_PRESSED) {
@@ -856,6 +983,8 @@ void SwapHandsDygma::judgeOneShotKey(Key key)
   } else if (os_ == OS_ACTIVE) {
     endOneShot();
   }
+
+  return true;
 }
 
 void SwapHandsDygma::endOneShot()
