@@ -31,7 +31,10 @@
 
 #include "KeyRoleManager.h"
 #include "AltRepeatDygma.h"
+#include "BaseDygma.h"
 #include "CombosDygma.h"
+#include "KeyboardioHID.h"
+#include "OneShotDygma.h"
 
 #define DEFAULT_HOLD_TIMEOUT_MS              250
 #define DEFAULT_OVERLAP_THRESHOLD            80
@@ -64,6 +67,9 @@
 
 #define DUALFUNC_MAX_HOLD_TIMEOUT_MS         2000
 #define DUALFUNC_MAX_FLOW_TERM_MS            250
+
+/* HID modifier bits the neutralizer covers, as QMK's default MODS_TO_NEUTRALIZE plus the right side. LAlt, LGui, RAlt, RGui */
+#define DUALFUNC_NEUTRALIZE_BITS             0xCC
 
 /* The Sonsei matrix has 12 columns, 6 per hand, and a thumb row. Row 4 columns 4..7 (positions 52..55) do not exist */
 #define DUALFUNC_THUMB_ROW                   4
@@ -113,12 +119,25 @@ EventHandlerResult Qukeys::onKeyswitchEvent(Key& key, KeyAddr k, uint8_t key_sta
     }
 
     /* Clear a stale forced tap left at the index this event takes */
-    forced_tap_mask_ &= (uint8_t)~(1u << event_queue_.length());
+    uint8_t index = event_queue_.length();
+    forced_tap_mask_ &= (uint8_t)~(1u << index);
 
     // If we can't trivially ignore the event, just add it to the queue.
     event_queue_.append(k, key_state);
+
+    if (keyToggledOn(key_state)) {
+      grantSpeculation(k, index);
+    }
+
     // In order to prevent overflowing the queue, process it now.
     if (event_queue_.isFull()) {
+      /* Keep a flush from overtaking a retro tap. Finish one the host already has, without a report, and drop one it never saw */
+      if (retro_stage_ == RETRO_RELEASE) {
+        emitRetroRelease();
+      } else if (retro_stage_ == RETRO_PRESS) {
+        retro_stage_ = RETRO_NONE;
+      }
+
       processQueue();
     }
     // Any event that gets added to the queue gets re-processed later, so we
@@ -174,27 +193,42 @@ EventHandlerResult Qukeys::beforeReportingState() {
     }
   }
 
-  // Next, if there hasn't been a keypress in a while, update the prior keypress
-  // timestamp to avoid integer overflow issues:
-  /* Use the longest possible interval, so a normalized timestamp reads as expired for every key's own interval */
-  if (Runtime.hasTimeExpired(prior_keypress_timestamp_,
-                             PRIOR_INTERVAL_NORMALIZE_MS)) {
-    prior_keypress_timestamp_ =
-      Runtime.millisAtCycleStart() - (PRIOR_INTERVAL_NORMALIZE_MS + 1);
+  if (retro_wake_pending_ && kbdtimer_check(&retro_timer_)) {
+    retro_wake_pending_ = false;
   }
 
-  // If any events get flushed from the queue, stop there; we can only safely
-  // send the one report per cycle.
-  if (processQueue()) {
-    return EventHandlerResult::OK;
+  /* Give the retro tap's press a report of its own, after the hold's release. The queue waits for the next cycle */
+  if (retro_stage_ == RETRO_PRESS) {
+    emitRetroPress();
+  } else {
+    if (retro_stage_ == RETRO_RELEASE) {
+      emitRetroRelease();
+    }
+
+    // Next, if there hasn't been a keypress in a while, update the prior keypress
+    // timestamp to avoid integer overflow issues:
+    /* Use the longest possible interval, so a normalized timestamp reads as expired for every key's own interval */
+    if (Runtime.hasTimeExpired(prior_keypress_timestamp_,
+                               PRIOR_INTERVAL_NORMALIZE_MS)) {
+      prior_keypress_timestamp_ =
+        Runtime.millisAtCycleStart() - (PRIOR_INTERVAL_NORMALIZE_MS + 1);
+    }
+
+    in_report_hook_ = true;
+
+    // If any events get flushed from the queue, stop there; we can only safely
+    // send the one report per cycle. Otherwise the first event in the queue is
+    // a qukey press, and all that's left to do is to check if it's been held
+    // long enough that it has timed out.
+    if (!processQueue() && Runtime.hasTimeExpired(event_queue_.timestamp(0), holdTimeout(event_queue_.addr(0)))) {
+      settleByTimeout();
+    }
+
+    in_report_hook_ = false;
   }
 
-  // If we get here, that means that the first event in the queue is a qukey
-  // press. All that's left to do is to check if it's been held long enough that
-  // it has timed out.
-  if (Runtime.hasTimeExpired(event_queue_.timestamp(0), holdTimeout(event_queue_.addr(0)))) {
-    settleByTimeout();
-  }
+  pressSpeculativeMods();
+
   return EventHandlerResult::OK;
 }
 
@@ -202,9 +236,13 @@ EventHandlerResult Qukeys::beforeReportingState() {
 void Qukeys::settleByTimeout() {
   // If it's a SpaceCadet-type key, it takes on its primary value, otherwise
   // it takes on its secondary value.
-  Key event_key = isModifierKey(queue_head_.primary_key) ?
-                  queue_head_.primary_key : queue_head_.alternate_key;
-  flushEvent(event_key);
+  bool spacecadet = isModifierKey(queue_head_.primary_key);
+
+  if (!spacecadet) {
+    armRetro(event_queue_.addr(0));
+  }
+
+  flushEvent(spacecadet ? queue_head_.primary_key : queue_head_.alternate_key, false, !spacecadet);
 }
 
 
@@ -319,7 +357,7 @@ bool Qukeys::processQueue() {
       /* Hold On Other Key Press. Respect the minimum hold time as the permissive hold does */
       if (mode == DUALFUNC_MODE_HOLD_ON_OTHER &&
           Runtime.hasTimeExpired(event_queue_.timestamp(0), p_Qukeys_config->minimum_hold_time)) {
-        flushEvent(queue_head_.alternate_key);
+        flushEvent(queue_head_.alternate_key, false, true);
         return true;
       }
 
@@ -394,7 +432,7 @@ bool Qukeys::processQueue() {
         // typists avoid unintended modifiers in the output.
         if (Runtime.hasTimeExpired(event_queue_.timestamp(0),
                                    p_Qukeys_config->minimum_hold_time)) {
-          flushEvent(queue_head_.alternate_key);
+          flushEvent(queue_head_.alternate_key, false, true);
           return true;
         }
       }
@@ -419,11 +457,45 @@ bool Qukeys::processQueue() {
 }
 
 
+/* A printable key press sets the prior keypress timestamp */
+static bool isPrintable(Key key)
+{
+  return (key >= Key_A && key <= Key_0) || (key >= Key_Minus && key <= Key_Slash);
+}
+
 // Flush one event from the head of the queue, with the specified Key value.
-void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
+void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   // First we record the address and state of the event:
   KeyAddr queue_head_addr = event_queue_.addr(0);
   uint8_t keyswitch_state = event_queue_.isRelease(0) ? WAS_PRESSED : IS_PRESSED;
+
+  /* Hand the head's speculative modifier over to its hold. Any other flush cancels every speculation, so it is never granted again */
+  if (spec_count_ != 0) {
+    if (hold) {
+      for (uint8_t i{1}; i < spec_count_; ++i) {
+        spec_key_[i - 1] = spec_key_[i];
+      }
+
+      --spec_count_;
+
+      if (spec_reported_ != 0) {
+        --spec_reported_;
+      }
+    } else {
+      if (in_report_hook_ && spec_reported_ != 0) {
+        neutralize(spec_key_, spec_reported_);
+      }
+
+      clearSpeculation();
+    }
+  }
+
+  /* Any other press that reaches the host makes the armed hold a real one */
+  if (!event_queue_.isRelease(0) && retro_stage_ == RETRO_ARMED && queue_head_addr != retro_addr_) {
+    retro_stage_ = RETRO_NONE;
+  }
+
+  bool retro_release = event_queue_.isRelease(0) && retro_stage_ == RETRO_ARMED && queue_head_addr == retro_addr_;
 
   /* Track the last tap for quick tap. End it at any other press flush, because that key reached the host between the tap and a re-press */
   uint32_t head_ms = widenTimestamp(event_queue_.timestamp(0));
@@ -450,9 +522,7 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
   // timestamp. This lets us suppress some unintended alternate values seen by
   // fast typists by requiring a minimum interval between this keypress and the
   // next qukey press in order for that qukey to become alternate-eligible.
-  if (!event_queue_.isRelease(0) &&
-      ((event_key >= Key_A && event_key <= Key_0) ||
-       (event_key >= Key_Minus && event_key <= Key_Slash))) {
+  if (!event_queue_.isRelease(0) && isPrintable(event_key)) {
     prior_keypress_timestamp_ = event_queue_.timestamp(0);
   }
 
@@ -463,6 +533,12 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
   flushing_queue_ = true;
   handleKeyswitchEvent(event_key, queue_head_addr, keyswitch_state);
   flushing_queue_ = false;
+
+  /* The hold is still in this cycle's report, so the neutralizer goes out before the tap in the next one */
+  if (retro_release) {
+    neutralize(&retro_hold_, 1);
+    retro_stage_ = RETRO_PRESS;
+  }
 
   /* Ask for another iteration as soon as possible */
   kbdpwr_sleep_postpone();
@@ -649,6 +725,12 @@ bool Qukeys::isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const {
  * keeps its timing */
 void Qukeys::notePhysicalPress(KeyAddr k)
 {
+  uint32_t now = Runtime.millisAtCycleStart();
+
+  press_gap_ms_ = now - last_press_ms_;
+  last_press_ms_ = now;
+  disarmRetro();
+
   if (k == last_press_addr_ && !Combos.ownsAddress(k)) {
     latch_addr_ = k;
     latch_ms_ = Runtime.millisAtCycleStart();
@@ -790,6 +872,16 @@ bool Qukeys::chordalFor(KeyAddr k) const
   return optionFor(k, DUALFUNC_SHIFT_CHORDAL, DUALFUNC_OPT_CHORDAL);
 }
 
+bool Qukeys::speculativeFor(KeyAddr k) const
+{
+  return optionFor(k, DUALFUNC_SHIFT_SPECULATIVE, DUALFUNC_OPT_SPECULATIVE);
+}
+
+bool Qukeys::retroFor(KeyAddr k) const
+{
+  return optionFor(k, DUALFUNC_SHIFT_RETRO, DUALFUNC_OPT_RETRO);
+}
+
 /* Return the hand of a matrix position. The thumb row counts as either hand, as QMK's '*' */
 uint8_t Qukeys::handOf(KeyAddr k)
 {
@@ -846,6 +938,248 @@ bool Qukeys::isStackableQukeyAt(KeyAddr k) const
   }
 
   return false;
+}
+
+/* Press the hold modifier of a mod-tap qukey at once while it is undecided. Grant it only behind speculated entries, so the
+ * speculated entries stay a prefix of the queue */
+void Qukeys::grantSpeculation(KeyAddr k, uint8_t index)
+{
+  if (index != spec_count_ || !active_ || retro_stage_ == RETRO_PRESS || retro_stage_ == RETRO_RELEASE || !speculativeFor(k) ||
+      Combos.ownsAddress(k)) {
+    return;
+  }
+
+  Key key = Layer.lookupOnActiveLayer(k);
+  Key primary{Key_Transparent};
+  Key alternate{Key_Transparent};
+
+  /* Never speculate on a layer hold or a SpaceCadet key */
+  if (key < ranges::DUM_FIRST || key > ranges::DUM_LAST || !decodeDualUse(key, primary, alternate) || plainModifierBits(alternate) == 0 ||
+      isModifierKey(primary)) {
+    return;
+  }
+
+  /* Skip while a Superkey is pending, and skip a press the prior interval or a quick tap makes a tap */
+  if (SuperkeysHandler::hasPendingSuperkey() || !Runtime.hasTimeExpired(prior_keypress_timestamp_, priorInterval(k)) ||
+      (k == latch_addr_ && quickTapWindow(k))) {
+    return;
+  }
+
+  const DualFunctionHeader_t &header = p_DualFunction_config->header;
+  auto &keyboard = Runtime.hid().keyboard();
+
+  if ((header.options & DUALFUNC_OPT_ONE_KEY) != 0 && (spec_count_ != 0 || keyboard.wasAnyModifierKeyActive())) {
+    return;
+  }
+
+  /* Skip a press Combos held back behind a later one, and a press inside the flow term after the one before */
+  if (k != last_press_addr_ || (header.speculative_flow_term != 0 && press_gap_ms_ < header.speculative_flow_term)) {
+    return;
+  }
+
+  if (keyboard.wasModifierKeyActive(alternate)) {
+    return;
+  }
+
+  spec_key_[spec_count_++] = alternate;
+}
+
+void Qukeys::clearSpeculation()
+{
+  spec_count_ = 0;
+  spec_reported_ = 0;
+}
+
+/* Press at the end of the report hook only, so the live keymap cache and other plugins never see a speculative modifier */
+void Qukeys::pressSpeculativeMods()
+{
+  for (uint8_t i{0}; i < spec_count_; ++i) {
+    Runtime.hid().keyboard().pressKey(spec_key_[i], false);
+  }
+
+  /* BaseDygma empties the report while key reports are off */
+  spec_reported_ = ::BaseDygma.isKeyReportEnabled() ? spec_count_ : 0;
+}
+
+/* Arm a retro tap for a qukey that resolved to hold at its timeout with no other key pressed since */
+void Qukeys::armRetro(KeyAddr k)
+{
+  if (!retroFor(k) || Combos.ownsAddress(k) || k != last_press_addr_) {
+    return;
+  }
+
+  for (uint8_t i{1}; i < event_queue_.length(); ++i) {
+    if (event_queue_.isPress(i)) {
+      return;
+    }
+  }
+
+  retro_addr_ = k;
+  retro_tap_ = queue_head_.primary_key;
+  retro_hold_ = queue_head_.alternate_key;
+  retro_stage_ = RETRO_ARMED;
+}
+
+/* Leave a retro tap already on its way, so its release always follows its press */
+void Qukeys::disarmRetro()
+{
+  if (retro_stage_ == RETRO_ARMED) {
+    retro_stage_ = RETRO_NONE;
+  }
+}
+
+void Qukeys::emitRetroPress()
+{
+  flushing_queue_ = true;
+  handleKeyswitchEvent(retro_tap_, retro_addr_, IS_PRESSED);
+  flushing_queue_ = false;
+
+  /* Release the key the press left in the live cache, which keeps a rewrite such as AltRepeat's */
+  retro_release_key_ = Layer.lookup(retro_addr_);
+
+  if (isPrintable(retro_tap_)) {
+    prior_keypress_timestamp_ = Runtime.millisAtCycleStart();
+  }
+
+  /* A retro tap never arms quick tap */
+  tap_addr_ = KeyAddr();
+
+  retro_stage_ = RETRO_RELEASE;
+
+  /* Wake for the release, since nothing else may postpone sleep */
+  kbdtimer_set_ms(&retro_timer_, 1);
+  retro_wake_pending_ = true;
+}
+
+void Qukeys::emitRetroRelease()
+{
+  flushing_queue_ = true;
+  handleKeyswitchEvent(retro_release_key_, retro_addr_, WAS_PRESSED);
+  flushing_queue_ = false;
+
+  retro_stage_ = RETRO_NONE;
+}
+
+/* Send the neutralizer key while Alt or GUI from these keys is still down, so their release alone opens no menu. Act only on bits the
+ * host has, after any KeyOverrides filter, and add only flag-free modifiers so a filtered bit never reaches the host */
+void Qukeys::neutralize(const Key *keys, uint8_t n)
+{
+  if (!in_report_hook_ || p_DualFunction_config == nullptr || p_DualFunction_config->header.neutralizer == 0 ||
+      !::BaseDygma.isKeyReportEnabled()) {
+    return;
+  }
+
+  auto &keyboard = Runtime.hid().keyboard();
+  uint8_t bits = 0;
+
+  for (uint8_t i{0}; i < n; ++i) {
+    bits |= plainModifierBits(keys[i]);
+  }
+
+  uint8_t seen = 0;
+
+  for (uint8_t b{0}; b < 8; ++b) {
+    if ((bits & (1u << b)) != 0 && keyboard.wasModifierKeyActive(Key(HID_KEYBOARD_FIRST_MODIFIER + b, KEY_FLAGS))) {
+      seen |= (uint8_t)(1u << b);
+    }
+  }
+
+  if ((seen & DUALFUNC_NEUTRALIZE_BITS) == 0) {
+    return;
+  }
+
+  uint8_t code = p_DualFunction_config->header.neutralizer;
+  Key dummy(code, KEY_FLAGS);
+
+  /* Leave a neutralizer key that is held for real alone */
+  if (code >= HID_KEYBOARD_FIRST_MODIFIER) {
+    if (keyboard.isModifierKeyActive(dummy) || keyboard.wasModifierKeyActive(dummy)) {
+      return;
+    }
+  } else if (::Keyboard.isKeyPressed(code) || ::Keyboard.wasKeyPressed(code)) {
+    return;
+  }
+
+  uint8_t before = 0;
+
+  for (uint8_t b{0}; b < 8; ++b) {
+    if (keyboard.isModifierKeyActive(Key(HID_KEYBOARD_FIRST_MODIFIER + b, KEY_FLAGS))) {
+      before |= (uint8_t)(1u << b);
+    }
+  }
+
+  for (uint8_t b{0}; b < 8; ++b) {
+    if ((seen & (1u << b)) != 0) {
+      keyboard.pressRawKey(Key(HID_KEYBOARD_FIRST_MODIFIER + b, KEY_FLAGS));
+    }
+  }
+
+  pressOneShotModifiers();
+
+  keyboard.pressRawKey(dummy);
+  keyboard.sendReport();
+  keyboard.releaseRawKey(dummy);
+  keyboard.sendReport();
+
+  /* Release only what this call added. The scan and OneShot press their own keys again */
+  for (uint8_t b{0}; b < 8; ++b) {
+    Key modifier(HID_KEYBOARD_FIRST_MODIFIER + b, KEY_FLAGS);
+
+    if ((before & (1u << b)) == 0 && keyboard.isModifierKeyActive(modifier)) {
+      keyboard.releaseRawKey(modifier);
+    }
+  }
+}
+
+/* Return the HID modifier bits a plain modifier key holds, with its flags, as KeyOverrides counts them. 0 for any other key */
+uint8_t Qukeys::plainModifierBits(Key key)
+{
+  if ((key.getFlags() & (SYNTHETIC | RESERVED)) != 0 || key.getKeyCode() < HID_KEYBOARD_FIRST_MODIFIER ||
+      key.getKeyCode() > HID_KEYBOARD_LAST_MODIFIER) {
+    return 0;
+  }
+
+  return (uint8_t)((1u << (key.getKeyCode() - HID_KEYBOARD_FIRST_MODIFIER)) | flagsToHid(key.getFlags()));
+}
+
+/* Key flags as HID bits, as Kaleidoscope's pressModifiers sends them */
+uint8_t Qukeys::flagsToHid(uint8_t flags)
+{
+  uint8_t hid = 0;
+
+  if (flags & CTRL_HELD) {
+    hid |= 0x01;
+  }
+
+  if (flags & SHIFT_HELD) {
+    hid |= 0x02;
+  }
+
+  if (flags & LALT_HELD) {
+    hid |= 0x04;
+  }
+
+  if (flags & GUI_HELD) {
+    hid |= 0x08;
+  }
+
+  if (flags & RALT_HELD) {
+    hid |= 0x40;
+  }
+
+  return hid;
+}
+
+/* OneShot presses its modifiers in its own report hook, after this one, so a mid-cycle report needs them here */
+void Qukeys::pressOneShotModifiers()
+{
+  for (uint8_t keycode = HID_KEYBOARD_FIRST_MODIFIER; keycode <= HID_KEYBOARD_LAST_MODIFIER; keycode++) {
+    Key key(keycode, KEY_FLAGS);
+
+    if (::OneShot.isModifierActive(key)) {
+      Runtime.hid().keyboard().pressKey(key, false);
+    }
+  }
 }
 
 /* Widen a queue timestamp to 32 bits. Rely on a queued event being at most a hold timeout old, well under 65536 ms */
@@ -944,6 +1278,13 @@ EventHandlerResult Qukeys::onFocusEvent(const char *command)
 
   if (strncmp_P(command, PSTR("qukeys."), 7) != 0)
     return EventHandlerResult::OK;
+
+  /* Drop a speculative modifier and an armed retro tap at any write, since the settings they came from may change */
+  if (!::Focus.isEOL())
+  {
+    clearSpeculation();
+    disarmRetro();
+  }
 
   if (strcmp_P(command + 7, PSTR("holdTimeout")) == 0)
   {

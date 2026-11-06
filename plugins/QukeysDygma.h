@@ -163,9 +163,16 @@ class Qukeys : public kaleidoscope::Plugin {
   }
   void deactivate() {
     active_ = false;
+    clearSpeculation();
+    disarmRetro();
   }
   void toggle() {
     active_ = !active_;
+
+    if (!active_) {
+      clearSpeculation();
+      disarmRetro();
+    }
   }
 
 //  // Set the timeout (in milliseconds) for a held qukey. If a qukey is held at
@@ -243,8 +250,9 @@ class Qukeys : public kaleidoscope::Plugin {
   // Deliberately conservative: this fires for any unflushed press, not just
   // qukeys. `isQukey()` is not usable here because it is non-const and writes
   // `queue_head_` as a side effect.
+  /* Also count a retro tap still on its way to the host */
   bool hasPendingQukey() const {
-    return active_ && !event_queue_.isEmpty() && !event_queue_.isRelease(0);
+    return active_ && ((!event_queue_.isEmpty() && !event_queue_.isRelease(0)) || retro_stage_ == RETRO_PRESS || retro_stage_ == RETRO_RELEASE);
   }
 
   // Is this event Qukeys replaying something it swallowed earlier, rather than
@@ -378,13 +386,36 @@ class Qukeys : public kaleidoscope::Plugin {
   /* Queue entries Chordal Hold settled as taps, bit i for index i */
   uint8_t forced_tap_mask_{0};
 
+  /* Speculative Hold. Queue entries [0, spec_count_) are undecided qukeys whose hold modifier spec_key_[i] is pressed early.
+   * The first spec_reported_ of them went out in a report */
+  uint8_t spec_count_{0};
+  uint8_t spec_reported_{0};
+  Key spec_key_[queue_capacity_];
+
+  /* True only while beforeReportingState decides the queue, where a mid-cycle report sees the whole scan */
+  bool in_report_hook_{false};
+
+  /* Time of the last genuine physical press and its gap to the press before, for the speculative flow term */
+  uint32_t last_press_ms_{0};
+  uint32_t press_gap_ms_{0xFFFFFFFF};
+
+  /* Retro Tapping. ARMED from a lone timeout hold until its release, then the tap goes out as PRESS and RELEASE in the next two cycles */
+  enum : uint8_t { RETRO_NONE, RETRO_ARMED, RETRO_PRESS, RETRO_RELEASE };
+  uint8_t retro_stage_{RETRO_NONE};
+  KeyAddr retro_addr_;
+  Key retro_tap_;
+  Key retro_hold_;
+  Key retro_release_key_;
+  kbdtimer_t retro_timer_{0};
+  bool retro_wake_pending_{false};
+
   static constexpr uint8_t HAND_THUMB = 0;
   static constexpr uint8_t HAND_LEFT = 1;
   static constexpr uint8_t HAND_RIGHT = 2;
 
   // Internal helper methods.
   bool processQueue();
-  void flushEvent(Key event_key, bool quick_tap_arms = false);
+  void flushEvent(Key event_key, bool quick_tap_arms = false, bool hold = false);
   bool isQukey(KeyAddr k);
   bool isDualUseKey(Key key);
   static bool decodeDualUse(Key key, Key &primary, Key &alternate);
@@ -404,10 +435,24 @@ class Qukeys : public kaleidoscope::Plugin {
   uint8_t modeFor(KeyAddr k) const;
   bool optionFor(KeyAddr k, uint8_t shift, uint8_t global_bit) const;
   bool chordalFor(KeyAddr k) const;
+  bool speculativeFor(KeyAddr k) const;
+  bool retroFor(KeyAddr k) const;
   static uint8_t handOf(KeyAddr k);
   bool sameHandChord(KeyAddr head, uint8_t index, uint16_t term) const;
   void settleSameHandTaps(KeyAddr head, uint8_t end, uint16_t term);
   void settleByTimeout();
+
+  void grantSpeculation(KeyAddr k, uint8_t index);
+  void clearSpeculation();
+  void pressSpeculativeMods();
+  void armRetro(KeyAddr k);
+  void disarmRetro();
+  void emitRetroPress();
+  void emitRetroRelease();
+  void neutralize(const Key *keys, uint8_t n);
+  static uint8_t plainModifierBits(Key key);
+  static uint8_t flagsToHid(uint8_t flags);
+  static void pressOneShotModifiers();
 
   void loadDualFunction();
   void updateTimeoutOverride();
