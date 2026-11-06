@@ -31,8 +31,8 @@ static_assert(ranges::SWAP_HANDS_TAP_LAST == 54631, "Swap hands codes must match
 static_assert(ranges::SAFE_START == 54632, "Swap hands codes must match Bazecor");
 
 /* Swap hands, as QMK swap hands. Mirror every key onto the other half while a swap key is active. The scanner router maps physical
- * addresses to logical ones before the core and any other plugin see an event. The plugin hook turns SH_T codes into their tap key
- * and consumes the other swap codes */
+ * addresses to logical ones before the core and any other plugin see an event. The plugin hook turns SH_T codes into their tap key,
+ * follows SH_MON as a Superkey action and consumes the other swap codes */
 class SwapHandsDygma : public kaleidoscope::Plugin {
  public:
   static constexpr uint8_t BUFFER_CAPACITY = 8;
@@ -114,6 +114,10 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
   /* Bit n = logical KeyAddr n */
   uint8_t occupied_[8] = {};   /* delivered by the router and not released */
   uint8_t os_mark_[8]  = {};   /* press delivered while SH_OS was armed */
+  uint8_t super_hold_[8]    = {};   /* a Superkey sent SH_MON here and keeps swap on while the address is held */
+  uint8_t super_release_[8] = {};   /* the live keymap holds a Superkey's SH_MON here, so its release must reach Superkeys */
+
+  uint8_t super_holds_ = 0;   /* bits set in super_hold_ */
 
   bool    swap_         = false;
   bool    pending_      = false;   /* an SH_T or SH_TT decision is open */
@@ -196,6 +200,10 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
 
   bool judgeOneShotKey(Key key);
   void endOneShot();
+
+  bool superHoldEvent(KeyAddr addr, uint8_t key_state);
+  void endSuperHold(KeyAddr addr);
+  void checkSuperHolds();
 };
 
 /* Judge SH_OS on the resolved key, registered right before OneShot so it sees the keys OneShot sees */

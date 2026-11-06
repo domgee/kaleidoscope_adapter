@@ -109,6 +109,10 @@ void SwapHandsDygma::scanBegin()
 {
   clock_ = Runtime.millisAtCycleStart();
 
+  if (super_holds_ != 0) {
+    checkSuperHolds();
+  }
+
   if (taps_len_ != 0 || inj_release_pending_ || draining_) {
     kbdtimer_check(&wake_timer_);
   }
@@ -881,6 +885,11 @@ void SwapHandsDygma::releaseInjected()
 
 EventHandlerResult SwapHandsDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
 {
+  /* A press replaces the live keymap entry at its address, so no Superkey SH_MON release can come from there after it */
+  if (keyToggledOn(key_state)) {
+    bitPut(super_release_, key_addr, false);
+  }
+
   /* Give a Qukeys replay of an emitted tap its tap key, also after a layer change */
   if (taps_len_ != 0 && keyToggledOn(key_state) && !(key_state & INJECTED) && keyRoleManager.isReplayingQueuedEvent()) {
     for (uint8_t i = 0; i < taps_len_; ++i) {
@@ -899,7 +908,11 @@ EventHandlerResult SwapHandsDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
     return EventHandlerResult::OK;
   }
 
-  /* A key mirrored onto an SH_T cell types its tap key. Swap codes act only from the router, so consume every other one */
+  if (raw == ranges::SWAP_HANDS_MON && key_addr.isValid() && superHoldEvent(key_addr, key_state)) {
+    return EventHandlerResult::OK;
+  }
+
+  /* A key mirrored onto an SH_T cell types its tap key. Swap codes act only from the router and a Superkey, so consume every other one */
   uint8_t kc = raw >= ranges::SWAP_HANDS_TAP_FIRST ? raw - ranges::SWAP_HANDS_TAP_FIRST : 0;
 
   if (kc == 0 || (key_state & INJECTED) || !key_addr.isValid()) {
@@ -933,6 +946,10 @@ EventHandlerResult SwapHandsDygma::onFocusEvent(const char *command)
 
     tt_order_len_ = 0;
 
+    /* Keep super_release_, so the Superkey's release still reaches Superkeys */
+    memset(super_hold_, 0, sizeof(super_hold_));
+    super_holds_ = 0;
+
     if (pending_ || draining_) {
       cancel_ = true;
     }
@@ -947,6 +964,60 @@ EventHandlerResult SwapHandsDygma::onFocusEvent(const char *command)
   /* Report only. Bazecor offers the swap keys when help lists this command */
   ::Focus.send((uint8_t)swap_, (uint8_t)os_, (uint8_t)pending_);
   return EventHandlerResult::EVENT_CONSUMED;
+}
+
+/* ------------------------------------------------------------------------- */
+/* SH_MON as a Superkey action                                               */
+/* ------------------------------------------------------------------------- */
+
+/* Superkeys inject SH_MON at the Superkey's address, and the key's physical release resolves to it through the live keymap. Swap
+ * stays on while that address is held. Return true when the event must go on to Superkeys */
+bool SwapHandsDygma::superHoldEvent(KeyAddr addr, uint8_t key_state)
+{
+  if (keyToggledOn(key_state)) {
+    /* Ignore an action sent after the key was released */
+    if ((key_state & INJECTED) && Runtime.device().isKeyswitchPressed(addr)) {
+      bitPut(super_release_, addr, true);
+
+      if (!bitGet(super_hold_, addr)) {
+        bitPut(super_hold_, addr, true);
+        super_holds_++;
+        swap_ = true;
+      }
+    }
+
+    return false;
+  }
+
+  if (!keyToggledOff(key_state)) {
+    return false;
+  }
+
+  endSuperHold(addr);
+
+  /* Pass the physical release and its Qukeys replay, so Superkeys drops the key from its timeline. Superkeys ignores injected events */
+  return !(key_state & INJECTED) && bitGet(super_release_, addr);
+}
+
+void SwapHandsDygma::endSuperHold(KeyAddr addr)
+{
+  if (!bitGet(super_hold_, addr)) {
+    return;
+  }
+
+  bitPut(super_hold_, addr, false);
+  super_holds_--;
+  swap_ = false;
+}
+
+/* End a Superkey hold whose address is no longer held, so a lost release can't leave swap on */
+void SwapHandsDygma::checkSuperHolds()
+{
+  for (auto addr : KeyAddr::all()) {
+    if (bitGet(super_hold_, addr) && !Runtime.device().isKeyswitchPressed(addr)) {
+      endSuperHold(addr);
+    }
+  }
 }
 
 KeyAddr SwapHandsDygma::physicalFor(KeyAddr logical) const
