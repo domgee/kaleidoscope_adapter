@@ -151,6 +151,7 @@ class DynamicMacros : public kaleidoscope::Plugin {
   uint8_t injecting_run_  = NONE;
   bool    injecting_protocol_ = false;
   uint8_t uni_owner_      = NONE;   /* run that plays a Unicode scalar, the others wait */
+  uint8_t uni_closing_    = NONE;   /* run whose scalar ends in this cycle's report, which must have Left Alt up */
   unicode_hex::Sequence uni_;
   uint8_t mask_remove_last_ = 0;   /* macro modifier filter last set in KeyboardioHID */
   uint8_t mask_add_last_    = 0;

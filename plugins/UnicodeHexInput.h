@@ -1,5 +1,5 @@
 /* UnicodeHexInput - Type Unicode scalars through macOS Unicode Hex Input.
- * Copyright (C) 2025 Dygma Lab S.L. www.dygma.com
+ * Copyright (C) 2026 Dygma Lab S.L. www.dygma.com
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU General Public License as published by the Free Software
@@ -35,7 +35,7 @@ uint8_t utf8Length(const uint8_t *p, uint16_t avail);
 /* Decode len bytes from utf8Length. Return INVALID for truncated, overlong, surrogate or out of range sequences */
 uint32_t utf8Decode(const uint8_t *p, uint8_t len);
 
-/* Key events of one scalar: Left Alt down, four hex digits per UTF-16 unit as taps, Left Alt up */
+/* Hold Left Alt for the key events of one scalar. Tap four hex digits per UTF-16 unit, then release Left Alt */
 class Sequence {
  public:
   /* Start a scalar. Code points above U+FFFF become a surrogate pair */

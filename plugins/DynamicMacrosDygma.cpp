@@ -426,6 +426,10 @@ void DynamicMacros::freeRun(uint8_t i)
     uni_owner_ = NONE;
   }
 
+  if (uni_closing_ == i) {
+    uni_closing_ = NONE;
+  }
+
   runs_[i].state = RUN_FREE;
   active_count_--;
 }
@@ -720,6 +724,7 @@ bool DynamicMacros::step(uint8_t i, uint32_t now)
       if (!uni_.active()) {
         uni_.reset();
         uni_owner_ = NONE;
+        uni_closing_ = i;
         r.sub = SUB_NONE;
       }
 
@@ -1083,10 +1088,11 @@ void DynamicMacros::finishStops()
         run.sub = SUB_NONE;
       }
 
-      unicode = unicode || run.sub == SUB_UNICODE;
+      unicode = unicode || run.sub == SUB_UNICODE || uni_closing_ == j;
     }
 
-    /* Let a Unicode scalar in flight complete first, since a cut one leaves the hex input open */
+    /* Let a Unicode scalar in flight complete first, since a cut one leaves the hex input open. Finish a tree whose scalar ends in
+     * this report a cycle later, so goIdle cannot drop the forced Left Alt release */
     if (!unicode) {
       finishRoot(root, true);
     }
@@ -1162,6 +1168,7 @@ void DynamicMacros::goIdle()
   rr_ = 0;
   uni_.reset();
   uni_owner_ = NONE;
+  uni_closing_ = NONE;
 
   if (mask_remove_last_ != 0 || mask_add_last_ != 0) {
     ::Keyboard.setMacroModifierFilter(0, 0);
@@ -1214,6 +1221,13 @@ void DynamicMacros::applyMask()
 
     remove = (uint8_t)~(hard | soft);
     add = (uint8_t)(hard | soft);
+  }
+
+  /* Force Left Alt up in the report that ends a scalar, so the host commits the character even when another source holds Alt */
+  if (uni_closing_ != NONE) {
+    remove |= 0x04;
+    add &= (uint8_t)~0x04;
+    uni_closing_ = NONE;
   }
 
   if (remove != mask_remove_last_ || add != mask_add_last_) {
