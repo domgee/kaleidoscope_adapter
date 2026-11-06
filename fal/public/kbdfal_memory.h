@@ -40,6 +40,7 @@ extern "C" {
         KBDMEM_ITEM_TYPE_ALTREPEAT,
         KBDMEM_ITEM_TYPE_KEYOVERRIDES,
         KBDMEM_ITEM_TYPE_QUICKTAP,
+        KBDMEM_ITEM_TYPE_CONDLAYERS,
     } kbdmem_item_type_t;
 
 #ifdef __cplusplus

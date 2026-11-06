@@ -23,6 +23,7 @@
 #include "BaseDygma.h"
 #include "CapsWordDygma.h"
 #include "CombosDygma.h"
+#include "ConditionalLayersDygma.h"
 #include "DynamicMacrosDygma.h"
 #include "EEPROMKeymapDygma.h"
 #include "kbdfal_ll_base.h"
@@ -57,6 +58,9 @@ KEYMAPS
 KALEIDOSCOPE_INIT_PLUGINS
 (
     EEPROMKeymap,
+    /*ConditionalLayers follows EEPROMKeymap and precedes every other onLayerChange consumer, so the outer layer change reaches
+      them after the rules applied*/
+    ConditionalLayers,
     /*AltRepeatRepair precedes Combos, which may buffer a re-press before AltRepeat sees it*/
     AltRepeatRepair,
     /*CapsWord trigger and Autoshift — must precede keyRoleManager so their own

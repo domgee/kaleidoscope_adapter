@@ -19,6 +19,7 @@
 
 #include "AltRepeatDygma.h"
 #include "CombosDygma.h"
+#include "ConditionalLayersDygma.h"
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
 #include "kaleidoscope/keyswitch_state.h"
@@ -184,6 +185,8 @@ void LayerHoldModsDygma::dropInactiveOwners(bool in_report) {
     if (!Layer.isActive(layer)) {
       if (!shifts_read) {
         shifted = heldLayerShifts();
+        /* Add the layers the conditional layer rules derive from the active and held layers, since they come back with them */
+        shifted |= ConditionalLayers.derived((uint16_t)((ConditionalLayersDygma::activeMask() | shifted) & ConditionalLayersDygma::LAYERS_MASK));
         shifts_read = true;
       }
 
@@ -193,7 +196,7 @@ void LayerHoldModsDygma::dropInactiveOwners(bool in_report) {
         continue;
       }
 
-      /* Keep the hold while another momentary key holds the layer. Layer_ reactivates it on that key's next event, so check again */
+      /* Keep the hold while a held momentary key or a rule on held layers brings the layer back on its next event, so check again */
       check_ = true;
     }
 
