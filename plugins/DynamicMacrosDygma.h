@@ -144,6 +144,7 @@ class DynamicMacros : public kaleidoscope::Plugin {
   uint8_t last_error_     = ERR_NONE;
   uint8_t injecting_run_  = NONE;
   uint8_t flag_hold_      = 0;   /* Key flag modifiers kept for held keys after an injected release */
+  bool    mask_reset_     = false;   /* a key press reset Kaleidoscope's modifier flag mask in this cycle */
   bool    timer_pending_  = false;
   kbdtimer_t timer_       = 0;
   uint32_t rng_           = 0;

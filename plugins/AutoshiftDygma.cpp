@@ -305,8 +305,7 @@ void AutoshiftDygma::emitTap(void)
   /* Press and release fit in a single cycle, as long as the report is pushed
    * out between them: releaseKey() is only honoured for INJECTED events, and
    * without the explicit sendReport() it would strip the keycode again before
-   * Runtime_::loop() ever sends it. Same pattern as playMacroKeyswitchEvent()
-   * in DynamicMacrosDygma.cpp. */
+   * Runtime_::loop() ever sends it. */
   handleKeyswitchEvent(key, pending_addr_, IS_PRESSED | INJECTED);
   Runtime.hid().keyboard().sendReport();
   handleKeyswitchEvent(key, pending_addr_, WAS_PRESSED | INJECTED);

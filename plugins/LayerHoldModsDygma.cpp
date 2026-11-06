@@ -52,7 +52,7 @@ EventHandlerResult LayerHoldModsDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr
   if (keyToggledOn(key_state) && key_addr.isValid() && !((key_state & INJECTED) && getBit(delivered_, key_addr))) {
     if (registerHold(hold_key, key_addr)) {
       setBit(bare_, key_addr, true);
-      /* Press now so a mid-scan report from a macro or an Autoshift tap carries them */
+      /* Press now so a mid-scan report from an Autoshift tap carries them */
       pressMods(held_mods_);
     } else {
       /* Send a press that did not register as a plain shortcut */

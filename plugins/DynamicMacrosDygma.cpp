@@ -502,12 +502,6 @@ uint8_t DynamicMacros::injectPress(uint8_t i, Key key, uint8_t kind)
   held_count_++;
 
   runs_[i].flags |= F_ITER_OUTPUT;
-
-  /* Forget the kept flag modifiers, since a new key press resets Kaleidoscope's modifier flag mask */
-  if (isKeyboardKey(key)) {
-    flag_hold_ = 0;
-  }
-
   return INJ_OK;
 }
 
@@ -587,10 +581,11 @@ void DynamicMacros::releaseEvent(uint8_t i, Key key)
     }
   }
 
-  /* Keep the flag modifiers the release cleared from Kaleidoscope's mask, when the last report carried them */
+  /* Keep the flag modifiers the release cleared from Kaleidoscope's mask, when the last report carried them and no key press reset
+   * the mask in this cycle */
   uint8_t mods = key.getFlags() & FLAG_MODS;
 
-  if (mods != 0) {
+  if (mods != 0 && !mask_reset_) {
     flag_hold_ |= mods & sentFlagMods();
   }
 }
@@ -1057,6 +1052,7 @@ void DynamicMacros::goIdle()
 {
   timer_pending_ = false;
   flag_hold_ = 0;
+  mask_reset_ = false;
   rr_ = 0;
 }
 
@@ -1150,9 +1146,6 @@ void DynamicMacros::onTriggerReleased(uint8_t i)
 
 void DynamicMacros::notePhysicalPress(KeyAddr key_addr)
 {
-  /* Forget the kept flag modifiers, since a new key press resets Kaleidoscope's modifier flag mask */
-  flag_hold_ = 0;
-
   /* End the token of an earlier press at this address */
   for (uint8_t t = 0; t < token_count_; ++t) {
     if (tokens_[t].addr == key_addr) {
@@ -1175,7 +1168,12 @@ void DynamicMacros::notePhysicalPress(KeyAddr key_addr)
       continue;
     }
 
-    if (r.parent != NONE || !(r.opts & OPT_OTHER_KEYS_STOP) || (r.flags & F_STOPPING) || key_addr == r.trigger) {
+    if (r.parent != NONE || !(r.opts & OPT_OTHER_KEYS_STOP) || (r.flags & F_STOPPING)) {
+      continue;
+    }
+
+    /* Skip the trigger only while it is held, so a later press there counts as another key */
+    if (key_addr == r.trigger && !(r.flags & F_RELEASED)) {
       continue;
     }
 
@@ -1189,8 +1187,16 @@ void DynamicMacros::notePhysicalPress(KeyAddr key_addr)
 
 EventHandlerResult DynamicMacros::onKeyswitchEvent(Key &mappedKey, KeyAddr key_addr, uint8_t keyState)
 {
-  /* End the token at a stopping address on its resolved press, and swallow that press when it would start a macro it stopped */
-  if (token_count_ != 0 && keyToggledOn(keyState) && key_addr.isValid()) {
+  /* Forget the kept flag modifiers, since a new key press resets Kaleidoscope's modifier flag mask */
+  if (active_count_ != 0 && keyToggledOn(keyState) && isKeyboardKey(mappedKey)) {
+    flag_hold_ = 0;
+    mask_reset_ = true;
+  }
+
+  /* End the token at a stopping address on its resolved press, and swallow that press when it would start a macro it stopped. Keep it
+   * through an injected modifier, such as the modifiers a Superkey sends before its action */
+  if (token_count_ != 0 && keyToggledOn(keyState) && key_addr.isValid() &&
+      !((keyState & INJECTED) && isKeyboardKey(mappedKey) && isModifierKeycode(mappedKey))) {
     for (uint8_t t = 0; t < token_count_; ++t) {
       if (tokens_[t].addr != key_addr) {
         continue;
@@ -1248,6 +1254,12 @@ EventHandlerResult DynamicMacros::beforeEachCycle()
   }
 
   injecting_run_ = NONE;
+
+  /* Keep the flag modifiers in mid-scan reports too */
+  if (flag_hold_ != 0) {
+    pressFlagMods(flag_hold_ & heldFlagMods());
+  }
+
   return EventHandlerResult::OK;
 }
 
@@ -1312,6 +1324,7 @@ EventHandlerResult DynamicMacros::beforeReportingState()
     runs_[i].flags &= (uint8_t)~F_FRESH;
   }
 
+  mask_reset_ = false;
   armTimer(now);
   return EventHandlerResult::OK;
 }
@@ -1342,8 +1355,9 @@ EventHandlerResult DynamicMacros::onFocusEvent(const char *command)
         ::Focus.send(p_macros_config->memory[i]);
       }
     } else {
-      /* Stop all macros before their steps change under them */
+      /* Stop all macros before their steps change under them, and forget the stop tokens of the old ids */
       abortAll(ERR_NONE);
+      token_count_ = 0;
 
       uint16_t pos = 0;
 
