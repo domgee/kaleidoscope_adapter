@@ -218,7 +218,7 @@ void ConditionalLayersDygma::evaluate()
   }
 }
 
-/* Turn off the owned layers no rule derives any more, top of the stack first, so the most recent layer changes as rarely as possible */
+/* Turn off the owned layers no rule derives any more, top of the stack first */
 void ConditionalLayersDygma::dropOwned(uint16_t drop)
 {
   memset(stack_pos_, 0, sizeof(stack_pos_));
