@@ -41,6 +41,7 @@ extern "C" {
         KBDMEM_ITEM_TYPE_KEYOVERRIDES,
         KBDMEM_ITEM_TYPE_QUICKTAP,
         KBDMEM_ITEM_TYPE_CONDLAYERS,
+        KBDMEM_ITEM_TYPE_DUALFUNC,
     } kbdmem_item_type_t;
 
 #ifdef __cplusplus

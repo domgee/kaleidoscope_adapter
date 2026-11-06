@@ -279,7 +279,7 @@ void SwapHandsDygma::makeRoom()
 /* Resolve an open decision as hold when the event being routed comes after its hold timeout, also for a refed buffer */
 void SwapHandsDygma::expireByClock()
 {
-  if (pending_ && clock_ - pending_ms_ >= ::qukeys.holdTimeout()) {
+  if (pending_ && clock_ - pending_ms_ >= ::qukeys.holdTimeout(controls_[pending_ctrl_].phys)) {
     resolveHold();
   }
 }
@@ -487,7 +487,7 @@ void SwapHandsDygma::controlPress(KeyAddr phys, uint16_t code, uint32_t press_ms
   } else if (code == ranges::SWAP_HANDS_ONESHOT) {
     os_ = OS_PRESSED;
   } else if (code == ranges::SWAP_HANDS_TAP_TOGGLE) {
-    if (tt_addr_ != phys || press_ms - tt_release_ms_ >= ::qukeys.holdTimeout()) {
+    if (tt_addr_ != phys || press_ms - tt_release_ms_ >= ::qukeys.holdTimeout(phys)) {
       tt_taps_ = 0;
     }
 
@@ -568,7 +568,7 @@ void SwapHandsDygma::startPending(uint8_t idx, uint32_t press_ms)
   pending_ctrl_ = idx;
   pending_ms_ = press_ms;
 
-  uint16_t hold_timeout = ::qukeys.holdTimeout();
+  uint16_t hold_timeout = ::qukeys.holdTimeout(controls_[idx].phys);
 
   if (clock_ - press_ms >= hold_timeout) {
     resolveHold();

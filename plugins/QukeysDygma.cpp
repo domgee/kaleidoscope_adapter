@@ -39,8 +39,44 @@
 #define DEFAULT_MINIMUM_PRIOR_INTERVAL_MS    75
 #define MAX_QUICK_TAP_TERM_MS                1000
 
+/* Above every prior interval, the global one up to 255 included */
+#define PRIOR_INTERVAL_NORMALIZE_MS          255
+
+/* Per-key fields that mean "use the global setting" */
+#define DUALFUNC_GLOBAL_U16                  0xFFFF
+#define DUALFUNC_GLOBAL_U8                   0xFF
+#define DUALFUNC_FIELD_MASK                  0x03
+#define DUALFUNC_FIELD_GLOBAL                0x03
+#define DUALFUNC_FIELD_INVALID               0x02
+
+/* Positions of the 2-bit fields in DualFunctionKey_t::flags */
+#define DUALFUNC_SHIFT_MODE                  0
+#define DUALFUNC_SHIFT_CHORDAL               2
+#define DUALFUNC_SHIFT_SPECULATIVE           4
+#define DUALFUNC_SHIFT_RETRO                 6
+
+/* Bits of DualFunctionHeader_t::options */
+#define DUALFUNC_OPT_CHORDAL                 0x01
+#define DUALFUNC_OPT_SPECULATIVE             0x02
+#define DUALFUNC_OPT_ONE_KEY                 0x04
+#define DUALFUNC_OPT_RETRO                   0x08
+#define DUALFUNC_OPT_MASK                    0x0F
+
+#define DUALFUNC_MAX_HOLD_TIMEOUT_MS         2000
+#define DUALFUNC_MAX_FLOW_TERM_MS            250
+
+/* The Sonsei matrix has 12 columns, 6 per hand, and a thumb row. Row 4 columns 4..7 (positions 52..55) do not exist */
+#define DUALFUNC_THUMB_ROW                   4
+#define DUALFUNC_COLS_PER_HAND               6
+#define DUALFUNC_FIRST_MISSING_POS           52
+#define DUALFUNC_LAST_MISSING_POS            55
+
 namespace kaleidoscope {
 namespace plugin {
+
+static_assert(KeyAddr::upper_limit == Qukeys::DUALFUNC_KEYS, "The per-key table needs one entry per matrix position");
+
+Qukeys::DualFunctionKey_t Qukeys::staging_keys_[Qukeys::DUALFUNC_KEYS];
 
 // This is the event handler. It ignores certain events, but mostly just adds
 // them to the Qukeys event queue.
@@ -75,6 +111,10 @@ EventHandlerResult Qukeys::onKeyswitchEvent(Key& key, KeyAddr k, uint8_t key_sta
       noteTapRelease(k, Runtime.millisAtCycleStart());
       return EventHandlerResult::OK;
     }
+
+    /* Clear a stale forced tap left at the index this event takes */
+    forced_tap_mask_ &= (uint8_t)~(1u << event_queue_.length());
+
     // If we can't trivially ignore the event, just add it to the queue.
     event_queue_.append(k, key_state);
     // In order to prevent overflowing the queue, process it now.
@@ -136,10 +176,11 @@ EventHandlerResult Qukeys::beforeReportingState() {
 
   // Next, if there hasn't been a keypress in a while, update the prior keypress
   // timestamp to avoid integer overflow issues:
+  /* Use the longest possible interval, so a normalized timestamp reads as expired for every key's own interval */
   if (Runtime.hasTimeExpired(prior_keypress_timestamp_,
-                             p_Qukeys_config->minimum_prior_interval)) {
+                             PRIOR_INTERVAL_NORMALIZE_MS)) {
     prior_keypress_timestamp_ =
-      Runtime.millisAtCycleStart() - (p_Qukeys_config->minimum_prior_interval + 1);
+      Runtime.millisAtCycleStart() - (PRIOR_INTERVAL_NORMALIZE_MS + 1);
   }
 
   // If any events get flushed from the queue, stop there; we can only safely
@@ -151,14 +192,19 @@ EventHandlerResult Qukeys::beforeReportingState() {
   // If we get here, that means that the first event in the queue is a qukey
   // press. All that's left to do is to check if it's been held long enough that
   // it has timed out.
-  if (Runtime.hasTimeExpired(event_queue_.timestamp(0), p_Qukeys_config->hold_timeout)) {
-    // If it's a SpaceCadet-type key, it takes on its primary value, otherwise
-    // it takes on its secondary value.
-    Key event_key = isModifierKey(queue_head_.primary_key) ?
-                    queue_head_.primary_key : queue_head_.alternate_key;
-    flushEvent(event_key);
+  if (Runtime.hasTimeExpired(event_queue_.timestamp(0), holdTimeout(event_queue_.addr(0)))) {
+    settleByTimeout();
   }
   return EventHandlerResult::OK;
+}
+
+/* Flush the qukey at the queue head as it resolves at its hold timeout */
+void Qukeys::settleByTimeout() {
+  // If it's a SpaceCadet-type key, it takes on its primary value, otherwise
+  // it takes on its secondary value.
+  Key event_key = isModifierKey(queue_head_.primary_key) ?
+                  queue_head_.primary_key : queue_head_.alternate_key;
+  flushEvent(event_key);
 }
 
 
@@ -203,6 +249,12 @@ bool Qukeys::processQueue() {
     return true;
   }
 
+  /* Send a qukey that Chordal Hold settled as a tap while an earlier qukey was undecided */
+  if ((forced_tap_mask_ & 1) != 0) {
+    flushEvent(queue_head_.primary_key, true);
+    return true;
+  }
+
   // Now we know that the first event is a key press, and that it's a qukey. In
   // addition, `queue_head_` now contains the primary and secondary Key values
   // for that qukey. As long as the Qukey is at the head of the event queue, we
@@ -221,16 +273,28 @@ bool Qukeys::processQueue() {
   // If the qukey press is followed a printable key too closely, it's not
   // eligible to take on its alternate value unless it's a SpaceCadet-type key.
   if (!Runtime.hasTimeExpired(prior_keypress_timestamp_,
-                              p_Qukeys_config->minimum_prior_interval) &&
+                              priorInterval(queue_head_addr)) &&
       !qukey_is_spacecadet) {
     flushEvent(queue_head_.primary_key, true);
     return true;
   }
 
+  /* SpaceCadet qukeys keep the permissive decision and take no Chordal Hold */
+  uint16_t hold_timeout = holdTimeout(queue_head_addr);
+  uint8_t mode = qukey_is_spacecadet ? DUALFUNC_MODE_PERMISSIVE : modeFor(queue_head_addr);
+  bool chordal = !qukey_is_spacecadet && chordalFor(queue_head_addr) && handOf(queue_head_addr) != HAND_THUMB &&
+                 !Combos.ownsAddress(queue_head_addr);
+
   // Now we search the queue for events that will let us decide if the qukey
   // should be flushed (and if so, in which of its two states). We start with
   // the second event in the queue (index 1).
   for (uint8_t i{1}; i < event_queue_.length(); ++i) {
+    /* Settle the head by its timeout before an event that came after it. Only a per-key timeout lets a queued event outlive the head */
+    if (has_timeout_override_ && (uint16_t)(event_queue_.timestamp(i) - event_queue_.timestamp(0)) >= hold_timeout) {
+      settleByTimeout();
+      return true;
+    }
+
     if (event_queue_.isPress(i)) {
       // If some other key was pressed after a SpaceCadet key, that means the
       // SpaceCadet qukey press should be flushed immediately, in its primary
@@ -240,6 +304,25 @@ bool Qukeys::processQueue() {
         flushEvent(queue_head_.primary_key);
         return true;
       }
+
+      /* Chordal Hold. Let a same-hand qukey stack, and make any other same-hand press a tap of the head and of the qukeys stacked on it */
+      if (chordal && sameHandChord(queue_head_addr, i, hold_timeout)) {
+        if (isStackableQukeyAt(event_queue_.addr(i))) {
+          continue;
+        }
+
+        settleSameHandTaps(queue_head_addr, i, hold_timeout);
+        flushEvent(queue_head_.primary_key, true);
+        return true;
+      }
+
+      /* Hold On Other Key Press. Respect the minimum hold time as the permissive hold does */
+      if (mode == DUALFUNC_MODE_HOLD_ON_OTHER &&
+          Runtime.hasTimeExpired(event_queue_.timestamp(0), p_Qukeys_config->minimum_hold_time)) {
+        flushEvent(queue_head_.alternate_key);
+        return true;
+      }
+
       // Otherwise, we've found a subsequent key press, so we record it for the
       // overlap comparison later, unless we've already done so.
       if (next_keypress_index == 0) {
@@ -255,7 +338,8 @@ bool Qukeys::processQueue() {
       // SpaceCadet key, or if no rollover compensation is being used, we can
       // flush it now. Its state depends on whether or not it's a
       // SpaceCadet-type key.
-      if (next_keypress_index == 0 || p_Qukeys_config->overlap_threshold == 0) {
+      /* Leave rollover compensation to the permissive mode */
+      if (next_keypress_index == 0 || p_Qukeys_config->overlap_threshold == 0 || mode != DUALFUNC_MODE_PERMISSIVE) {
         Key event_key = qukey_is_spacecadet ?
                         queue_head_.alternate_key : queue_head_.primary_key;
         flushEvent(event_key, !qukey_is_spacecadet);
@@ -276,6 +360,22 @@ bool Qukeys::processQueue() {
       // typing rollover, not deliberate chording.
       flushEvent(queue_head_.primary_key, true);
       return true;
+    }
+
+    /* Chordal Hold. A same-hand key tapped inside the qukey makes it a tap, even after an opposite-hand press */
+    if (chordal) {
+      for (uint8_t j{1}; j < i; ++j) {
+        if (event_queue_.addr(j) == event_queue_.addr(i) && sameHandChord(queue_head_addr, j, hold_timeout)) {
+          settleSameHandTaps(queue_head_addr, i, hold_timeout);
+          flushEvent(queue_head_.primary_key, true);
+          return true;
+        }
+      }
+    }
+
+    /* Timeout only. A nested tap never decides the qukey */
+    if (mode == DUALFUNC_MODE_TIMEOUT_ONLY) {
+      continue;
     }
 
     // Event `i` is a key release of some other key than the qukey. Now we check
@@ -337,7 +437,7 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
     }
 
     /* Never count a combo action replayed at its anchor as a tap */
-    if (quick_tap_arms && quickTapTerm() != 0 && !Combos.ownsAddress(queue_head_addr)) {
+    if (quick_tap_arms && quickTapTerm(queue_head_addr) != 0 && !Combos.ownsAddress(queue_head_addr)) {
       tap_addr_ = queue_head_addr;
       tap_released_ = false;
       tap_press_ms_ = head_ms;
@@ -358,6 +458,7 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms) {
 
   // Remove the head event from the queue:
   event_queue_.shift();
+  forced_tap_mask_ >>= 1;
   // This ensures that the flushed event will be ignored by the event handler hook:
   flushing_queue_ = true;
   handleKeyswitchEvent(event_key, queue_head_addr, keyswitch_state);
@@ -407,6 +508,11 @@ bool Qukeys::isQukey(KeyAddr k) {
 // function because it gets called on its own when Qukeys is turned off. Like
 // isQukey(), it sets `queue_head_.*` as a side effect.
 bool Qukeys::isDualUseKey(Key key) {
+  return decodeDualUse(key, queue_head_.primary_key, queue_head_.alternate_key);
+}
+
+/* Decode a DualUse key into its tap and hold keys without touching queue_head_. Leave both outputs unchanged for any other key */
+bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
   // Test for DualUse modifiers:
   if (key >= ranges::DUM_FIRST && key <= ranges::DUM_LAST) {
 
@@ -421,7 +527,7 @@ bool Qukeys::isDualUseKey(Key key) {
       keycode = keycode - 128;  // Remove the flags offset
     }
     
-    queue_head_.primary_key = Key(keycode);
+    primary = Key(keycode);
     
     // Determine if this is a right modifier by checking the original key's 9th bit
     // Determine the modifier key based on the modifier_index
@@ -448,19 +554,19 @@ bool Qukeys::isDualUseKey(Key key) {
             break;
     }
     
-    queue_head_.alternate_key = modifier_base;
+    alternate = modifier_base;
     
     // If the user had some qukeys configured in the keymap action flags will return nullptr,
     // this is because the already existitng qukeys are not stored in the configured keys array.
     // In this case we will use the default flags, to keep the legacy qukey functionality.
     if (action_flags != nullptr) 
     {
-      queue_head_.primary_key.setFlags(action_flags->flags_action_1);
-      queue_head_.alternate_key.setFlags(action_flags->flags_action_2);
+      primary.setFlags(action_flags->flags_action_1);
+      alternate.setFlags(action_flags->flags_action_2);
     }
     else 
     {
-      queue_head_.primary_key.setFlags(0);
+      primary.setFlags(0);
     }
 
 
@@ -486,18 +592,18 @@ bool Qukeys::isDualUseKey(Key key) {
     //NRF_LOG_DEBUG("  offset=0x%04X, layer=%d, keycode=0x%02X, has_flags=%d", 
     //              offset, layer, keycode_offset, has_tap_flags);
     
-    queue_head_.primary_key = Key(keycode_offset);
+    primary = Key(keycode_offset);
 
     if (action_flags != nullptr) {
       //NRF_LOG_DEBUG("  Using action flags: action1_flags=0x%02X, action2_flags=0x%02X",
       //              action_flags->flags_action_1, action_flags->flags_action_2);
-      queue_head_.primary_key.setFlags(action_flags->flags_action_1);
+      primary.setFlags(action_flags->flags_action_1);
     } else {
       //NRF_LOG_DEBUG("  No action flags, using default flags");
-      queue_head_.primary_key.setFlags(0);
+      primary.setFlags(0);
     }
 
-    queue_head_.alternate_key = ShiftToLayer(layer);
+    alternate = ShiftToLayer(layer);
     //NRF_LOG_DEBUG("  Set alternate key to layer %d", layer);
     return true;
   }
@@ -567,9 +673,15 @@ bool Qukeys::quickTapDue(KeyAddr k)
 
   latch_addr_ = KeyAddr();
 
-  uint16_t term = quickTapTerm();
+  return quickTapWindow(k) && !isModifierKey(queue_head_.primary_key);
+}
 
-  return term != 0 && k == tap_addr_ && tap_released_ && !isModifierKey(queue_head_.primary_key) && latch_ms_ - tap_release_ms_ < term;
+/* Return true when a press latched at k repeats its tap within the key's quick tap term */
+bool Qukeys::quickTapWindow(KeyAddr k) const
+{
+  uint16_t term = quickTapTerm(k);
+
+  return term != 0 && k == tap_addr_ && tap_released_ && latch_ms_ - tap_release_ms_ < term;
 }
 
 /* Count a tap only when its key came up within the hold timeout */
@@ -579,7 +691,7 @@ void Qukeys::noteTapRelease(KeyAddr k, uint32_t release_ms)
     return;
   }
 
-  if (release_ms - tap_press_ms_ < p_Qukeys_config->hold_timeout) {
+  if (release_ms - tap_press_ms_ < holdTimeout(k)) {
     tap_released_ = true;
     tap_release_ms_ = release_ms;
   } else {
@@ -604,16 +716,134 @@ uint16_t Qukeys::holdTimeout() const
   return p_Qukeys_config->hold_timeout;
 }
 
-/* Cap the term at the hold timeout as QMK caps QUICK_TAP_TERM at TAPPING_TERM */
-uint16_t Qukeys::quickTapTerm() const
+uint16_t Qukeys::holdTimeout(KeyAddr k) const
+{
+  const DualFunctionKey_t *key = keyConfig(k);
+
+  if (key == nullptr || key->hold_timeout == DUALFUNC_GLOBAL_U16) {
+    return holdTimeout();
+  }
+
+  return key->hold_timeout;
+}
+
+/* Cap the term at the key's hold timeout as QMK caps QUICK_TAP_TERM at TAPPING_TERM */
+uint16_t Qukeys::quickTapTerm(KeyAddr k) const
 {
   if (p_QuickTap_config == nullptr) {
     return 0;
   }
 
-  uint16_t term = p_QuickTap_config->quick_tap_term;
+  const DualFunctionKey_t *key = keyConfig(k);
+  uint16_t term = (key == nullptr || key->quick_tap_term == DUALFUNC_GLOBAL_U16) ? p_QuickTap_config->quick_tap_term : key->quick_tap_term;
+  uint16_t hold_timeout = holdTimeout(k);
 
-  return term < p_Qukeys_config->hold_timeout ? term : p_Qukeys_config->hold_timeout;
+  return term < hold_timeout ? term : hold_timeout;
+}
+
+/* Return the key's own settings, or nullptr before setup and for an address outside the matrix */
+const Qukeys::DualFunctionKey_t *Qukeys::keyConfig(KeyAddr k) const
+{
+  if (p_DualFunction_config == nullptr || !k.isValid()) {
+    return nullptr;
+  }
+
+  return &p_DualFunction_config->keys[k.toInt()];
+}
+
+uint8_t Qukeys::priorInterval(KeyAddr k) const
+{
+  const DualFunctionKey_t *key = keyConfig(k);
+
+  if (key == nullptr || key->prior_interval == DUALFUNC_GLOBAL_U8) {
+    return p_Qukeys_config->minimum_prior_interval;
+  }
+
+  return key->prior_interval;
+}
+
+uint8_t Qukeys::modeFor(KeyAddr k) const
+{
+  const DualFunctionKey_t *key = keyConfig(k);
+
+  if (key != nullptr && (key->flags & DUALFUNC_FIELD_MASK) != DUALFUNC_FIELD_GLOBAL) {
+    return key->flags & DUALFUNC_FIELD_MASK;
+  }
+
+  return p_DualFunction_config == nullptr ? DUALFUNC_MODE_PERMISSIVE : p_DualFunction_config->header.mode;
+}
+
+/* Resolve the on/off field at bit `shift` of the key's flags, or the global option bit when the field says global */
+bool Qukeys::optionFor(KeyAddr k, uint8_t shift, uint8_t global_bit) const
+{
+  const DualFunctionKey_t *key = keyConfig(k);
+
+  if (key != nullptr && ((key->flags >> shift) & DUALFUNC_FIELD_MASK) != DUALFUNC_FIELD_GLOBAL) {
+    return ((key->flags >> shift) & DUALFUNC_FIELD_MASK) == 1;
+  }
+
+  return p_DualFunction_config != nullptr && (p_DualFunction_config->header.options & global_bit) != 0;
+}
+
+bool Qukeys::chordalFor(KeyAddr k) const
+{
+  return optionFor(k, DUALFUNC_SHIFT_CHORDAL, DUALFUNC_OPT_CHORDAL);
+}
+
+/* Return the hand of a matrix position. The thumb row counts as either hand, as QMK's '*' */
+uint8_t Qukeys::handOf(KeyAddr k)
+{
+  if (k.row() == DUALFUNC_THUMB_ROW) {
+    return HAND_THUMB;
+  }
+
+  return k.col() < DUALFUNC_COLS_PER_HAND ? HAND_LEFT : HAND_RIGHT;
+}
+
+/* Return true when the event at index is a press or release on the head's hand, within the head's hold timeout, and not a combo */
+bool Qukeys::sameHandChord(KeyAddr head, uint8_t index, uint16_t term) const
+{
+  KeyAddr k = event_queue_.addr(index);
+  uint8_t hand = handOf(k);
+
+  return hand != HAND_THUMB && hand == handOf(head) && !Combos.ownsAddress(k) &&
+         (uint16_t)(event_queue_.timestamp(index) - event_queue_.timestamp(0)) < term;
+}
+
+/* Mark the same-hand qukeys stacked before index `end` as taps, so they follow the head as taps when they reach the queue head */
+void Qukeys::settleSameHandTaps(KeyAddr head, uint8_t end, uint16_t term)
+{
+  for (uint8_t j{1}; j < end; ++j) {
+    KeyAddr k = event_queue_.addr(j);
+
+    if (event_queue_.isPress(j) && sameHandChord(head, j, term) && isStackableQukeyAt(k) && chordalFor(k)) {
+      forced_tap_mask_ |= (uint8_t)(1u << j);
+    }
+  }
+}
+
+/* Return true when the key at k is a qukey whose tap is not a modifier. Leave queue_head_ untouched, since the head's values stay in use */
+bool Qukeys::isStackableQukeyAt(KeyAddr k) const
+{
+  Key key = Layer.lookupOnActiveLayer(k);
+  Key primary{Key_Transparent};
+  Key alternate{Key_Transparent};
+
+  if (decodeDualUse(key, primary, alternate)) {
+    return !isModifierKey(primary);
+  }
+
+  uint8_t layer_index = Layer.lookupActiveLayer(k);
+
+  for (uint8_t i{0}; i < qukeys_count_; ++i) {
+    Qukey qukey = cloneFromProgmem(qukeys_[i]);
+
+    if (qukey.addr == k && (qukey.layer == layer_index || qukey.layer == layer_wildcard)) {
+      return !isModifierKey(key);
+    }
+  }
+
+  return false;
 }
 
 /* Widen a queue timestamp to 32 bits. Rely on a queued event being at most a hold timeout old, well under 65536 ms */
@@ -653,13 +883,9 @@ bool isModifierKey(Key key) {
   return false;
 }
 
-/* Read one decimal of 0 to MAX_QUICK_TAP_TERM_MS followed by the end of the line. Reject anything else */
-static bool readQuickTapTerm(uint16_t &term)
+/* Skip spaces and return true at the end of the line. Leave the newline for FocusSerial */
+static bool readLineEnd()
 {
-  if (!AltRepeatDygma::readValue(term) || term > MAX_QUICK_TAP_TERM_MS) {
-    return false;
-  }
-
   int c = AltRepeatDygma::peekWait();
 
   while (c == ' ') {
@@ -670,10 +896,47 @@ static bool readQuickTapTerm(uint16_t &term)
   return c == '\n';
 }
 
+/* Read the rest of a rejected line here, because FocusSerial::drain does not wait for bytes still in transit */
+static void rejectLine()
+{
+  for (int c = AltRepeatDygma::peekWait(); c >= 0 && c != '\n'; c = AltRepeatDygma::peekWait()) {
+    Runtime.serialPort().read();
+  }
+
+  ::Focus.send("error");
+}
+
+/* Read one decimal of 0 to MAX_QUICK_TAP_TERM_MS followed by the end of the line. Reject anything else */
+static bool readQuickTapTerm(uint16_t &term)
+{
+  if (!AltRepeatDygma::readValue(term) || term > MAX_QUICK_TAP_TERM_MS) {
+    return false;
+  }
+
+  return readLineEnd();
+}
+
+static bool neutralizerAllowed(uint8_t keycode)
+{
+  return keycode == 0 || (keycode >= HID_KEYBOARD_A_AND_A && keycode <= HID_KEYPAD_HEXADECIMAL) ||
+         (keycode >= HID_KEYBOARD_FIRST_MODIFIER && keycode <= HID_KEYBOARD_LAST_MODIFIER);
+}
+
+static bool positionExists(uint8_t pos)
+{
+  return pos < Qukeys::DUALFUNC_KEYS && (pos < DUALFUNC_FIRST_MISSING_POS || pos > DUALFUNC_LAST_MISSING_POS);
+}
+
+static bool isGlobalKey(const Qukeys::DualFunctionKey_t &key)
+{
+  return key.hold_timeout == DUALFUNC_GLOBAL_U16 && key.quick_tap_term == DUALFUNC_GLOBAL_U16 && key.prior_interval == DUALFUNC_GLOBAL_U8 &&
+         key.flags == DUALFUNC_GLOBAL_U8;
+}
+
 EventHandlerResult Qukeys::onFocusEvent(const char *command)
 {
   if (::Focus.handleHelp(command, PSTR("qukeys.holdTimeout\nqukeys.overlapThreshold\nqukeys.minimumHoldTime\nqukeys.minimumPriorInterval\n"
-                                       "qukeys.quickTapTerm"))) {
+                                       "qukeys.quickTapTerm\nqukeys.dualFunction\nqukeys.perKey"))) {
     return EventHandlerResult::OK;
   }
 
@@ -764,17 +1027,237 @@ EventHandlerResult Qukeys::onFocusEvent(const char *command)
       }
       else
       {
-        /* Read the rest of a rejected line here, because FocusSerial::drain does not wait for bytes still in transit */
-        for (int c = AltRepeatDygma::peekWait(); c >= 0 && c != '\n'; c = AltRepeatDygma::peekWait()) {
-          Runtime.serialPort().read();
-        }
-
-        ::Focus.send("error");
+        rejectLine();
       }
     }
   }
 
+  if (strcmp_P(command + 7, PSTR("dualFunction")) == 0)
+  {
+    DualFunctionHeader_t header;
+
+    if (::Focus.isEOL())
+    {
+      sendDualFunction();
+    }
+    else if (readDualFunction(header))
+    {
+      mem_dualfunc_header_save( header );
+    }
+    else
+    {
+      rejectLine();
+    }
+  }
+
+  if (strcmp_P(command + 7, PSTR("perKey")) == 0)
+  {
+    if (::Focus.isEOL())
+    {
+      sendPerKey();
+    }
+    else if (readPerKey())
+    {
+      mem_dualfunc_keys_save();
+      updateTimeoutOverride();
+      resetQuickTap();
+    }
+    else
+    {
+      rejectLine();
+    }
+  }
+
   return EventHandlerResult::EVENT_CONSUMED;
+}
+
+/* Send <mode> <chordal> <speculative> <oneKey> <flowTerm> <retro> <neutralizer> */
+void Qukeys::sendDualFunction() const
+{
+  const DualFunctionHeader_t &header = p_DualFunction_config->header;
+
+  ::Focus.send(header.mode, (header.options & DUALFUNC_OPT_CHORDAL) != 0 ? 1 : 0, (header.options & DUALFUNC_OPT_SPECULATIVE) != 0 ? 1 : 0,
+               (header.options & DUALFUNC_OPT_ONE_KEY) != 0 ? 1 : 0, header.speculative_flow_term, (header.options & DUALFUNC_OPT_RETRO) != 0 ? 1 : 0,
+               header.neutralizer);
+}
+
+/* Parse exactly seven decimals in the order sendDualFunction sends them. Return false on a missing, malformed or out of range value */
+bool Qukeys::readDualFunction(DualFunctionHeader_t &header)
+{
+  uint16_t v[7];
+
+  for (uint8_t i = 0; i < 7; ++i) {
+    if (!AltRepeatDygma::readValue(v[i])) {
+      return false;
+    }
+  }
+
+  if (!readLineEnd() || v[0] > DUALFUNC_MODE_TIMEOUT_ONLY || v[1] > 1 || v[2] > 1 || v[3] > 1 || v[4] > DUALFUNC_MAX_FLOW_TERM_MS ||
+      v[5] > 1 || v[6] > 0xFF) {
+    return false;
+  }
+
+  memset(&header, 0, sizeof(header));
+  header.layout_version = DUALFUNC_LAYOUT_VERSION;
+  header.mode = (uint8_t)v[0];
+  header.options = (v[1] != 0 ? DUALFUNC_OPT_CHORDAL : 0) | (v[2] != 0 ? DUALFUNC_OPT_SPECULATIVE : 0) | (v[3] != 0 ? DUALFUNC_OPT_ONE_KEY : 0) |
+                   (v[5] != 0 ? DUALFUNC_OPT_RETRO : 0);
+  header.speculative_flow_term = (uint8_t)v[4];
+  header.neutralizer = (uint8_t)v[6];
+
+  return headerAllowed(header);
+}
+
+/* Send <count> and then <pos> <holdTimeout> <quickTapTerm> <priorInterval> <mode> <chordal> <speculative> <retro> for each key with an override */
+void Qukeys::sendPerKey() const
+{
+  uint8_t count = 0;
+
+  for (uint8_t pos = 0; pos < DUALFUNC_KEYS; ++pos) {
+    if (!isGlobalKey(p_DualFunction_config->keys[pos])) {
+      ++count;
+    }
+  }
+
+  ::Focus.send(count);
+
+  for (uint8_t pos = 0; pos < DUALFUNC_KEYS; ++pos) {
+    const DualFunctionKey_t &key = p_DualFunction_config->keys[pos];
+
+    if (isGlobalKey(key)) {
+      continue;
+    }
+
+    uint8_t flags = key.flags;
+    uint8_t mode = (flags >> DUALFUNC_SHIFT_MODE) & DUALFUNC_FIELD_MASK;
+    uint8_t chordal = (flags >> DUALFUNC_SHIFT_CHORDAL) & DUALFUNC_FIELD_MASK;
+    uint8_t speculative = (flags >> DUALFUNC_SHIFT_SPECULATIVE) & DUALFUNC_FIELD_MASK;
+    uint8_t retro = (flags >> DUALFUNC_SHIFT_RETRO) & DUALFUNC_FIELD_MASK;
+
+    ::Focus.send(pos, key.hold_timeout, key.quick_tap_term, key.prior_interval, mode, chordal, speculative, retro);
+  }
+}
+
+/* Parse a whole table into staging_keys_ in the format sendPerKey sends. Return false on the first missing, malformed, out of range or
+ * duplicate value, or an entry a load would reject */
+bool Qukeys::readPerKey()
+{
+  memset(staging_keys_, DUALFUNC_GLOBAL_U8, sizeof(staging_keys_));
+
+  uint64_t seen = 0;
+  uint16_t count = 0;
+
+  if (!AltRepeatDygma::readValue(count) || count > DUALFUNC_KEYS - (DUALFUNC_LAST_MISSING_POS - DUALFUNC_FIRST_MISSING_POS + 1)) {
+    return false;
+  }
+
+  for (uint16_t i = 0; i < count; ++i) {
+    uint16_t v[8];
+
+    for (uint8_t f = 0; f < 8; ++f) {
+      if (!AltRepeatDygma::readValue(v[f])) {
+        return false;
+      }
+    }
+
+    if (v[0] > 0xFF || !positionExists((uint8_t)v[0]) || (seen & (1ULL << v[0])) != 0) {
+      return false;
+    }
+
+    if (v[3] > 0xFF || v[4] > DUALFUNC_FIELD_MASK || v[5] > DUALFUNC_FIELD_MASK || v[6] > DUALFUNC_FIELD_MASK || v[7] > DUALFUNC_FIELD_MASK) {
+      return false;
+    }
+
+    DualFunctionKey_t key;
+    key.hold_timeout = v[1];
+    key.quick_tap_term = v[2];
+    key.prior_interval = (uint8_t)v[3];
+    key.flags = (uint8_t)((v[4] << DUALFUNC_SHIFT_MODE) | (v[5] << DUALFUNC_SHIFT_CHORDAL) | (v[6] << DUALFUNC_SHIFT_SPECULATIVE) |
+                          (v[7] << DUALFUNC_SHIFT_RETRO));
+
+    if (!keyAllowed((uint8_t)v[0], key)) {
+      return false;
+    }
+
+    staging_keys_[v[0]] = key;
+    seen |= 1ULL << v[0];
+  }
+
+  return readLineEnd();
+}
+
+bool Qukeys::headerAllowed(const DualFunctionHeader_t &header)
+{
+  return header.mode <= DUALFUNC_MODE_TIMEOUT_ONLY && (header.options & (uint8_t)~DUALFUNC_OPT_MASK) == 0 &&
+         header.speculative_flow_term <= DUALFUNC_MAX_FLOW_TERM_MS && neutralizerAllowed(header.neutralizer);
+}
+
+/* Check one table entry. Load and write share it, so storage only holds what a write accepts */
+bool Qukeys::keyAllowed(uint8_t pos, const DualFunctionKey_t &key)
+{
+  if (!positionExists(pos)) {
+    return isGlobalKey(key);
+  }
+
+  if (key.hold_timeout != DUALFUNC_GLOBAL_U16 && (key.hold_timeout == 0 || key.hold_timeout > DUALFUNC_MAX_HOLD_TIMEOUT_MS)) {
+    return false;
+  }
+
+  if (key.quick_tap_term != DUALFUNC_GLOBAL_U16 && key.quick_tap_term > MAX_QUICK_TAP_TERM_MS) {
+    return false;
+  }
+
+  /* The mode field takes every 2-bit value, the on/off fields never take 2 */
+  return ((key.flags >> DUALFUNC_SHIFT_CHORDAL) & DUALFUNC_FIELD_MASK) != DUALFUNC_FIELD_INVALID &&
+         ((key.flags >> DUALFUNC_SHIFT_SPECULATIVE) & DUALFUNC_FIELD_MASK) != DUALFUNC_FIELD_INVALID &&
+         ((key.flags >> DUALFUNC_SHIFT_RETRO) & DUALFUNC_FIELD_MASK) != DUALFUNC_FIELD_INVALID;
+}
+
+/* Start with every option off and every key global on erased flash or another layout. Reset a header or entry a write would reject */
+void Qukeys::loadDualFunction()
+{
+  DualFunctionHeader_t header;
+
+  memset(&header, 0, sizeof(header));
+  header.layout_version = DUALFUNC_LAYOUT_VERSION;
+
+  if (p_DualFunction_config->header.layout_version != DUALFUNC_LAYOUT_VERSION) {
+    mem_dualfunc_header_save( header );
+    memset(staging_keys_, DUALFUNC_GLOBAL_U8, sizeof(staging_keys_));
+    mem_dualfunc_keys_save();
+  } else {
+    if (!headerAllowed(p_DualFunction_config->header)) {
+      mem_dualfunc_header_save( header );
+    }
+
+    bool changed = false;
+
+    memcpy(staging_keys_, p_DualFunction_config->keys, sizeof(staging_keys_));
+
+    for (uint8_t pos = 0; pos < DUALFUNC_KEYS; ++pos) {
+      if (!keyAllowed(pos, staging_keys_[pos])) {
+        memset(&staging_keys_[pos], DUALFUNC_GLOBAL_U8, sizeof(staging_keys_[pos]));
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      mem_dualfunc_keys_save();
+    }
+  }
+
+  updateTimeoutOverride();
+}
+
+void Qukeys::updateTimeoutOverride()
+{
+  has_timeout_override_ = false;
+
+  for (uint8_t pos = 0; pos < DUALFUNC_KEYS; ++pos) {
+    if (p_DualFunction_config->keys[pos].hold_timeout != DUALFUNC_GLOBAL_U16) {
+      has_timeout_override_ = true;
+    }
+  }
 }
 
 EventHandlerResult Qukeys::onSetup()
@@ -812,6 +1295,11 @@ EventHandlerResult Qukeys::onSetup()
   {
     mem_quick_tap_term_save( 0 );
   }
+
+  result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_DUALFUNC, (const void **)&p_DualFunction_config );
+  ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
+
+  loadDualFunction();
 
   return EventHandlerResult::OK;
 
@@ -864,6 +1352,27 @@ void Qukeys::mem_quick_tap_term_save( uint16_t quick_tap_term )
 
     result = kbdfal_ll_memory_data_save( &p_QuickTap_config->quick_tap_term, &quick_tap_term, sizeof(p_QuickTap_config->quick_tap_term) );
     ASSERT_DYGMA( result == RESULT_OK, "quick_tap_term failed" );
+
+    UNUSED( result );
+}
+
+void Qukeys::mem_dualfunc_header_save( const DualFunctionHeader_t &header )
+{
+    result_t result = RESULT_ERR;
+
+    result = kbdfal_ll_memory_data_save( &p_DualFunction_config->header, &header, sizeof(DualFunctionHeader_t) );
+    ASSERT_DYGMA( result == RESULT_OK, "dualfunc header failed" );
+
+    UNUSED( result );
+}
+
+/* Save the whole table from staging_keys_ */
+void Qukeys::mem_dualfunc_keys_save()
+{
+    result_t result = RESULT_ERR;
+
+    result = kbdfal_ll_memory_data_save( p_DualFunction_config->keys, staging_keys_, sizeof(staging_keys_) );
+    ASSERT_DYGMA( result == RESULT_OK, "dualfunc keys failed" );
 
     UNUSED( result );
 }

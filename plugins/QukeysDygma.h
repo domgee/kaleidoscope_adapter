@@ -120,6 +120,42 @@ class Qukeys : public kaleidoscope::Plugin {
         uint16_t quick_tap_term;
     } QuickTap_config_t;
 
+    /* Dual-function key options, appended to config_cache_t after condlayers */
+    static constexpr uint8_t DUALFUNC_LAYOUT_VERSION = 1;
+    static constexpr uint8_t DUALFUNC_KEYS = 60;
+
+    /* Decision modes */
+    static constexpr uint8_t DUALFUNC_MODE_PERMISSIVE = 0;
+    static constexpr uint8_t DUALFUNC_MODE_HOLD_ON_OTHER = 1;
+    static constexpr uint8_t DUALFUNC_MODE_TIMEOUT_ONLY = 2;
+
+    typedef struct PACK
+    {
+        uint8_t layout_version;         /* DUALFUNC_LAYOUT_VERSION */
+        uint8_t mode;                   /* 0..2, default 0 */
+        uint8_t options;                /* bit0 chordal, bit1 speculative, bit2 speculative one key, bit3 retro. Default 0 */
+        uint8_t speculative_flow_term;  /* 0..250 ms, 0 = off */
+        uint8_t neutralizer;            /* HID keycode 0x04..0xDD or 0xE0..0xE7, 0 = off */
+        uint8_t reserved[3];            /* written 0 */
+    } DualFunctionHeader_t;
+
+    /* One per matrix position (row * 12 + col). 0xFFFF, 0xFF and the 2-bit value 3 mean use the global setting */
+    typedef struct PACK
+    {
+        uint16_t hold_timeout;    /* 0xFFFF global, else 1..2000 ms */
+        uint16_t quick_tap_term;  /* 0xFFFF global, else 0..1000 ms, 0 = off for this key */
+        uint8_t  prior_interval;  /* 0xFF global, else 0..254 ms */
+        uint8_t  flags;           /* bits 0-1 mode (0..2, 3 global), bits 2-3 chordal, 4-5 speculative, 6-7 retro (0 off, 1 on, 3 global) */
+    } DualFunctionKey_t;
+
+    typedef struct PACK
+    {
+        DualFunctionHeader_t header;
+        DualFunctionKey_t keys[DUALFUNC_KEYS];
+    } DualFunction_config_t;
+
+    static_assert(sizeof(DualFunction_config_t) == 368, "DualFunction_config_t is stored in flash, never change its size");
+
  public:
   // Methods for turning the plugin on and off.
   void activate() {
@@ -247,6 +283,9 @@ class Qukeys : public kaleidoscope::Plugin {
   /* Return the hold timeout in ms. SwapHands uses it for its own tap/hold decisions */
   uint16_t holdTimeout() const;
 
+  /* Return the hold timeout in ms of the key at k, which is its per-key override or the global timeout */
+  uint16_t holdTimeout(KeyAddr k) const;
+
   /* Note a genuine physical key press. Call it from CombosDygma for every one, before any plugin can consume it */
   void notePhysicalPress(KeyAddr k);
 
@@ -328,25 +367,64 @@ class Qukeys : public kaleidoscope::Plugin {
   KeyAddr  latch_addr_;
   uint32_t latch_ms_{0};
 
+  const DualFunction_config_t * p_DualFunction_config{nullptr};
+
+  /* Parse a qukeys.perKey write here, so a rejected write keeps the stored table */
+  static DualFunctionKey_t staging_keys_[DUALFUNC_KEYS];
+
+  /* True while any key has its own hold timeout. Only then can a queued event outlive the head's deadline */
+  bool has_timeout_override_{false};
+
+  /* Queue entries Chordal Hold settled as taps, bit i for index i */
+  uint8_t forced_tap_mask_{0};
+
+  static constexpr uint8_t HAND_THUMB = 0;
+  static constexpr uint8_t HAND_LEFT = 1;
+  static constexpr uint8_t HAND_RIGHT = 2;
+
   // Internal helper methods.
   bool processQueue();
   void flushEvent(Key event_key, bool quick_tap_arms = false);
   bool isQukey(KeyAddr k);
   bool isDualUseKey(Key key);
+  static bool decodeDualUse(Key key, Key &primary, Key &alternate);
+  bool isStackableQukeyAt(KeyAddr k) const;
   bool releaseDelayed(uint16_t overlap_start, uint16_t overlap_end) const;
   bool isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const;
   bool quickTapDue(KeyAddr k);
+  bool quickTapWindow(KeyAddr k) const;
   void noteTapRelease(KeyAddr k, uint32_t release_ms);
   void resetQuickTap();
-  uint16_t quickTapTerm() const;
+  uint16_t quickTapTerm(KeyAddr k) const;
   static uint32_t widenTimestamp(uint16_t timestamp);
   static bool isBefore(uint32_t a, uint32_t b);
+
+  const DualFunctionKey_t *keyConfig(KeyAddr k) const;
+  uint8_t priorInterval(KeyAddr k) const;
+  uint8_t modeFor(KeyAddr k) const;
+  bool optionFor(KeyAddr k, uint8_t shift, uint8_t global_bit) const;
+  bool chordalFor(KeyAddr k) const;
+  static uint8_t handOf(KeyAddr k);
+  bool sameHandChord(KeyAddr head, uint8_t index, uint16_t term) const;
+  void settleSameHandTaps(KeyAddr head, uint8_t end, uint16_t term);
+  void settleByTimeout();
+
+  void loadDualFunction();
+  void updateTimeoutOverride();
+  static bool headerAllowed(const DualFunctionHeader_t &header);
+  static bool keyAllowed(uint8_t pos, const DualFunctionKey_t &key);
+  void sendDualFunction() const;
+  bool readDualFunction(DualFunctionHeader_t &header);
+  void sendPerKey() const;
+  bool readPerKey();
 
   void mem_hold_timeout_save( uint16_t hold_timeout );
   void mem_overlap_threshold_save( uint8_t overlap_threshold );
   void mem_minimum_hold_time_save( uint8_t minimum_hold_time );
   void mem_minimum_prior_interval_save( uint8_t minimum_prior_interval );
   void mem_quick_tap_term_save( uint16_t quick_tap_term );
+  void mem_dualfunc_header_save( const DualFunctionHeader_t &header );
+  void mem_dualfunc_keys_save();
 };
 
 // This function returns true for any key that we expect to be used chorded with
