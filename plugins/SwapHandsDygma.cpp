@@ -975,15 +975,18 @@ EventHandlerResult SwapHandsDygma::onFocusEvent(const char *command)
 bool SwapHandsDygma::superHoldEvent(KeyAddr addr, uint8_t key_state)
 {
   if (keyToggledOn(key_state)) {
-    /* Ignore an action sent after the key was released */
-    if ((key_state & INJECTED) && Runtime.device().isKeyswitchPressed(addr)) {
-      bitPut(super_release_, addr, true);
+    if (!(key_state & INJECTED)) {
+      return false;
+    }
 
-      if (!bitGet(super_hold_, addr)) {
-        bitPut(super_hold_, addr, true);
-        super_holds_++;
-        swap_ = true;
-      }
+    /* Mark also an action sent after the key was released. Qukeys may still hold that release in its queue */
+    bitPut(super_release_, addr, true);
+
+    /* Swap only while the key is held */
+    if (Runtime.device().isKeyswitchPressed(addr) && !bitGet(super_hold_, addr)) {
+      bitPut(super_hold_, addr, true);
+      super_holds_++;
+      swap_ = true;
     }
 
     return false;

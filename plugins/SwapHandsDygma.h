@@ -115,7 +115,7 @@ class SwapHandsDygma : public kaleidoscope::Plugin {
   uint8_t occupied_[8] = {};   /* delivered by the router and not released */
   uint8_t os_mark_[8]  = {};   /* press delivered while SH_OS was armed */
   uint8_t super_hold_[8]    = {};   /* a Superkey sent SH_MON here and keeps swap on while the address is held */
-  uint8_t super_release_[8] = {};   /* the live keymap holds a Superkey's SH_MON here, so its release must reach Superkeys */
+  uint8_t super_release_[8] = {};   /* a Superkey sent SH_MON here, also after the key's release, so that release must reach Superkeys */
 
   uint8_t super_holds_ = 0;   /* bits set in super_hold_ */
 
