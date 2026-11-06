@@ -552,6 +552,11 @@ EventHandlerResult AltRepeatTrackDygma::onSetup()
 
 EventHandlerResult AltRepeatTrackDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
 {
+  /* Keep Unicode hex input keys out of history */
+  if (::DynamicMacros.injectingProtocol()) {
+    return EventHandlerResult::OK;
+  }
+
   if (mapped_key.getFlags() & (SYNTHETIC | RESERVED)) {
     return EventHandlerResult::OK;
   }

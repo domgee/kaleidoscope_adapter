@@ -20,6 +20,7 @@
 
 #include "BaseDygma.h"
 #include "hidDefy.h"
+#include "KeyboardioHID.h"
 #include "OneShotDygma.h"
 #include "QukeysDygma.h"
 
@@ -91,36 +92,6 @@ static uint8_t fixedLength(uint8_t type)
   }
 }
 
-/* Return the bytes of the UTF-8 scalar at p, a lead C2..F4 plus the continuation bytes 80..BF after it, at most avail. Return 0
- * when p[0] is no lead */
-static uint8_t utf8Length(const uint8_t *p, uint16_t avail)
-{
-  if (avail == 0) {
-    return 0;
-  }
-
-  uint8_t lead = p[0];
-  uint8_t need = 0;
-
-  if (lead >= 0xC2 && lead <= 0xDF) {
-    need = 2;
-  } else if (lead >= 0xE0 && lead <= 0xEF) {
-    need = 3;
-  } else if (lead >= 0xF0 && lead <= 0xF4) {
-    need = 4;
-  } else {
-    return 0;
-  }
-
-  uint8_t n = 1;
-
-  while (n < need && n < avail && p[n] >= 0x80 && p[n] <= 0xBF) {
-    n++;
-  }
-
-  return n;
-}
-
 /* Key flag modifiers the last report carried */
 static uint8_t sentFlagMods()
 {
@@ -176,6 +147,34 @@ static void pressFlagMods(uint8_t mods)
   }
 }
 
+/* Key flag modifiers as HID modifier bits, as Kaleidoscope's pressModifiers sends them */
+static uint8_t flagsToHid(uint8_t flags)
+{
+  uint8_t hid = 0;
+
+  if (flags & CTRL_HELD) {
+    hid |= 0x01;
+  }
+
+  if (flags & SHIFT_HELD) {
+    hid |= 0x02;
+  }
+
+  if (flags & LALT_HELD) {
+    hid |= 0x04;
+  }
+
+  if (flags & GUI_HELD) {
+    hid |= 0x08;
+  }
+
+  if (flags & RALT_HELD) {
+    hid |= 0x40;
+  }
+
+  return hid;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Macro memory                                                              */
 /* ------------------------------------------------------------------------- */
@@ -217,7 +216,7 @@ uint16_t DynamicMacros::stepLength(uint16_t pos, uint8_t type)
   }
 
   if (type == STEP_UNICODE) {
-    return utf8Length(&mem[pos], avail);
+    return unicode_hex::utf8Length(&mem[pos], avail);
   }
 
   return (n > avail) ? avail : n;
@@ -319,6 +318,11 @@ KeyAddr DynamicMacros::injectingFor() const
   return runs_[rootOf(injecting_run_)].trigger;
 }
 
+bool DynamicMacros::injectingProtocol() const
+{
+  return injecting_protocol_;
+}
+
 void DynamicMacros::wakeSoon()
 {
   kbdtimer_set_ms(&timer_, 1);
@@ -417,6 +421,11 @@ bool DynamicMacros::startChild(uint8_t i, uint8_t id)
 /* Free a run. No other place does */
 void DynamicMacros::freeRun(uint8_t i)
 {
+  if (uni_owner_ == i) {
+    uni_.reset();
+    uni_owner_ = NONE;
+  }
+
   runs_[i].state = RUN_FREE;
   active_count_--;
 }
@@ -493,8 +502,10 @@ uint8_t DynamicMacros::injectPress(uint8_t i, Key key, uint8_t kind)
   }
 
   injecting_run_ = i;
+  injecting_protocol_ = (kind & HELD_PROTOCOL) != 0;
   handleKeyswitchEvent(key, UnknownKeyswitchLocation, IS_PRESSED | INJECTED);
   injecting_run_ = NONE;
+  injecting_protocol_ = false;
 
   held_[held_count_].key = key;
   held_[held_count_].owner = i;
@@ -518,8 +529,10 @@ void DynamicMacros::releaseTemp(uint8_t i, Key key)
 {
   for (uint8_t h = held_count_; h-- > 0;) {
     if (held_[h].owner == i && (held_[h].kind & HELD_TEMP) && held_[h].key == key) {
+      uint8_t kind = held_[h].kind;
+
       removeHeld(h);
-      releaseEvent(i, key);
+      releaseEvent(i, key, kind);
       return;
     }
   }
@@ -545,18 +558,23 @@ void DynamicMacros::releasePersistent(uint8_t i, Key key)
     }
   }
 
+  uint8_t kind = 0;
+
   if (found != NONE) {
+    kind = held_[found].kind;
     removeHeld(found);
   }
 
-  releaseEvent(i, key);
+  releaseEvent(i, key, kind);
 }
 
-void DynamicMacros::releaseEvent(uint8_t i, Key key)
+void DynamicMacros::releaseEvent(uint8_t i, Key key, uint8_t kind)
 {
   injecting_run_ = i;
+  injecting_protocol_ = (kind & HELD_PROTOCOL) != 0;
   handleKeyswitchEvent(key, UnknownKeyswitchLocation, WAS_PRESSED | INJECTED);
   injecting_run_ = NONE;
+  injecting_protocol_ = false;
 
   /* Release a consumer usage explicitly, since its toggle-off leaves it in the report */
   if (isConsumerKey(key)) {
@@ -595,9 +613,10 @@ void DynamicMacros::releaseHeldOf(uint8_t i)
   for (uint8_t h = held_count_; h-- > 0;) {
     if (held_[h].owner == i) {
       Key key = held_[h].key;
+      uint8_t kind = held_[h].kind;
 
       removeHeld(h);
-      releaseEvent(i, key);
+      releaseEvent(i, key, kind);
     }
   }
 }
@@ -618,9 +637,15 @@ uint8_t DynamicMacros::heldFlagMods() const
   return mods;
 }
 
-/* Stop the tree when the held table is full. Nothing was acquired for the failed key */
+/* Stop the tree when the held table is full. Nothing was acquired for the failed key. finishStops releases what the tree holds, Left
+ * Alt of a cut scalar included */
 void DynamicMacros::failStop(uint8_t i)
 {
+  if (uni_owner_ == i) {
+    uni_.reset();
+    uni_owner_ = NONE;
+  }
+
   runs_[i].sub = SUB_NONE;
   last_error_ = ERR_HELD_FULL;
   requestStop(rootOf(i));
@@ -651,6 +676,20 @@ uint16_t DynamicMacros::randomDelay(uint16_t min_ms, uint16_t max_ms)
   return (uint16_t)(min_ms + rng_ % range);
 }
 
+/* Return true when a run other than i still has to release a tap or sequence key */
+bool DynamicMacros::otherReleasePending(uint8_t i) const
+{
+  for (uint8_t j = 0; j < MAX_RUNS; ++j) {
+    uint8_t sub = runs_[j].sub;
+
+    if (j != i && runs_[j].state != RUN_FREE && (sub == SUB_TAP_RELEASE || sub == SUB_SEQ_RELEASE || sub == SUB_CODESEQ_RELEASE)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /* Play steps of run i until one output unit went out. Return true when it did */
 bool DynamicMacros::step(uint8_t i, uint32_t now)
 {
@@ -662,6 +701,37 @@ bool DynamicMacros::step(uint8_t i, uint32_t now)
     r.flags |= F_ITER_OUTPUT;
     r.sub = (r.sub == SUB_TAP_RELEASE) ? (uint8_t)SUB_NONE : (uint8_t)(r.sub - 1);
     return true;
+  }
+
+  /* Send the next key event of the Unicode scalar. A stop waits until the scalar is complete */
+  if (r.sub == SUB_UNICODE) {
+    Key key = Key_NoKey;
+    bool press = false;
+
+    if (uni_.next(key, press)) {
+      if (!press) {
+        releaseTemp(i, key);
+      } else if (injectPress(i, key, HELD_TEMP | HELD_PROTOCOL) == INJ_FAILED) {
+        failStop(i);
+        return false;
+      }
+
+      /* End the scalar with the Left Alt release, so the pacing wait keeps the next scalar's Left Alt press a report apart */
+      if (!uni_.active()) {
+        uni_.reset();
+        uni_owner_ = NONE;
+        r.sub = SUB_NONE;
+      }
+
+      r.state = RUN_WAITING;
+      r.due_ms = now + unicode_hex::PACE_MS;
+      r.flags |= F_ITER_OUTPUT;
+      return true;
+    }
+
+    uni_.reset();
+    uni_owner_ = NONE;
+    r.sub = SUB_NONE;
   }
 
   if (runs_[rootOf(i)].flags & F_STOPPING) {
@@ -871,10 +941,38 @@ bool DynamicMacros::step(uint8_t i, uint32_t now)
 
       continue;
 
-    case STEP_UNICODE:
-      /* Skip the scalar */
+    case STEP_UNICODE: {
+      /* Wait at the step while another run types a scalar or has a key down for a tap, so nothing else enters the hex input */
+      if ((uni_owner_ != NONE && uni_owner_ != i) || otherReleasePending(i)) {
+        return batch;
+      }
+
       r.pos = p + len;
-      continue;
+
+      uint32_t cp = (len != 0) ? unicode_hex::utf8Decode(&mem[p], (uint8_t)len) : unicode_hex::INVALID;
+
+      if (cp == unicode_hex::INVALID) {
+        continue;
+      }
+
+      uni_.begin(cp);
+      uni_owner_ = i;
+      r.sub = SUB_UNICODE;
+
+      Key key = Key_NoKey;
+      bool press = false;
+
+      uni_.next(key, press);
+
+      if (injectPress(i, key, HELD_TEMP | HELD_PROTOCOL) == INJ_FAILED) {
+        failStop(i);
+        return batch;
+      }
+
+      r.state = RUN_WAITING;
+      r.due_ms = now + unicode_hex::PACE_MS;
+      return true;
+    }
 
     default:
       r.pos = p;
@@ -971,6 +1069,8 @@ void DynamicMacros::finishStops()
       continue;
     }
 
+    bool unicode = false;
+
     for (uint8_t j = 0; j < MAX_RUNS; ++j) {
       Run &run = runs_[j];
 
@@ -982,19 +1082,24 @@ void DynamicMacros::finishStops()
         releaseTemp(j, run.sub_key);
         run.sub = SUB_NONE;
       }
+
+      unicode = unicode || run.sub == SUB_UNICODE;
     }
 
-    finishRoot(root, true);
+    /* Let a Unicode scalar in flight complete first, since a cut one leaves the hex input open */
+    if (!unicode) {
+      finishRoot(root, true);
+    }
   }
 }
 
-/* Step the playing runs round-robin until one sends an output unit */
+/* Step the playing runs round-robin until one sends an output unit. Only the owner of a Unicode scalar plays while it is in flight */
 bool DynamicMacros::pickAndStep(uint32_t now)
 {
   for (uint8_t n = 1; n <= MAX_RUNS; ++n) {
     uint8_t i = (uint8_t)((rr_ + n) % MAX_RUNS);
 
-    if (runs_[i].state != RUN_PLAYING) {
+    if (runs_[i].state != RUN_PLAYING || (uni_owner_ != NONE && uni_owner_ != i)) {
       continue;
     }
 
@@ -1007,7 +1112,8 @@ bool DynamicMacros::pickAndStep(uint32_t now)
   return false;
 }
 
-/* Wake in 1 ms while a run can play, at the nearest deadline while runs wait, and not at all while runs are paused */
+/* Wake in 1 ms while a run can play, at the nearest deadline while runs wait, and not at all while runs are paused. Runs that wait for a
+ * Unicode scalar follow the owner's pacing deadline */
 void DynamicMacros::armTimer(uint32_t now)
 {
   if (active_count_ == 0) {
@@ -1018,7 +1124,7 @@ void DynamicMacros::armTimer(uint32_t now)
   uint32_t ms = 0;
 
   for (uint8_t i = 0; i < MAX_RUNS; ++i) {
-    if (runs_[i].state == RUN_PLAYING) {
+    if (runs_[i].state == RUN_PLAYING && (uni_owner_ == NONE || uni_owner_ == i)) {
       ms = 1;
       break;
     }
@@ -1054,6 +1160,67 @@ void DynamicMacros::goIdle()
   flag_hold_ = 0;
   mask_reset_ = false;
   rr_ = 0;
+  uni_.reset();
+  uni_owner_ = NONE;
+
+  if (mask_remove_last_ != 0 || mask_add_last_ != 0) {
+    ::Keyboard.setMacroModifierFilter(0, 0);
+    mask_remove_last_ = 0;
+    mask_add_last_ = 0;
+  }
+}
+
+/* Set the modifiers the macros send. A Unicode scalar sends Left Alt only. A macro that ignores held modifiers sends its own modifiers
+ * only, with the flag modifiers of its keys forced on, so no other plugin or held key can add or strip one */
+void DynamicMacros::applyMask()
+{
+  uint8_t remove = 0;
+  uint8_t add = 0;
+  bool ignore = false;
+
+  for (uint8_t i = 0; i < MAX_RUNS && !ignore; ++i) {
+    const Run &r = runs_[i];
+
+    if (r.state == RUN_PLAYING || r.state == RUN_WAITING || r.state == RUN_CHILD) {
+      ignore = ((r.opts | runs_[rootOf(i)].opts) & OPT_IGNORE_MODS) != 0;
+    }
+  }
+
+  if (uni_owner_ != NONE) {
+    remove = (uint8_t)~0x04;
+
+    for (uint8_t h = 0; h < held_count_; ++h) {
+      if ((held_[h].kind & HELD_PROTOCOL) && held_[h].key == Key_LeftAlt) {
+        add = 0x04;
+      }
+    }
+  } else if (ignore) {
+    uint8_t hard = 0;
+    uint8_t soft = 0;
+
+    for (uint8_t h = 0; h < held_count_; ++h) {
+      Key key = held_[h].key;
+
+      if (!isKeyboardKey(key)) {
+        continue;
+      }
+
+      if (isModifierKeycode(key)) {
+        hard |= (uint8_t)((1 << (key.getKeyCode() - HID_KEYBOARD_FIRST_MODIFIER)) | flagsToHid(key.getFlags()));
+      } else {
+        soft |= flagsToHid(key.getFlags());
+      }
+    }
+
+    remove = (uint8_t)~(hard | soft);
+    add = (uint8_t)(hard | soft);
+  }
+
+  if (remove != mask_remove_last_ || add != mask_add_last_) {
+    ::Keyboard.setMacroModifierFilter(remove, add);
+    mask_remove_last_ = remove;
+    mask_add_last_ = add;
+  }
 }
 
 /* Stop every macro at once and release what they hold */
@@ -1250,16 +1417,12 @@ EventHandlerResult DynamicMacros::beforeEachCycle()
   /* Hold the keys the macros pressed in the new report */
   for (uint8_t h = 0; h < held_count_; ++h) {
     injecting_run_ = held_[h].owner;
+    injecting_protocol_ = (held_[h].kind & HELD_PROTOCOL) != 0;
     handleKeyswitchEvent(held_[h].key, UnknownKeyswitchLocation, IS_PRESSED | WAS_PRESSED | INJECTED);
   }
 
   injecting_run_ = NONE;
-
-  /* Keep the flag modifiers in mid-scan reports too */
-  if (flag_hold_ != 0) {
-    pressFlagMods(flag_hold_ & heldFlagMods());
-  }
-
+  injecting_protocol_ = false;
   return EventHandlerResult::OK;
 }
 
@@ -1305,7 +1468,7 @@ EventHandlerResult DynamicMacros::beforeReportingState()
       r.state = RUN_PLAYING;
     }
 
-    playing = playing || r.state == RUN_PLAYING;
+    playing = playing || (r.state == RUN_PLAYING && (uni_owner_ == NONE || uni_owner_ == i));
   }
 
   /* Wait while the HID FIFO holds about two reports, so output never overruns it */
@@ -1319,6 +1482,8 @@ EventHandlerResult DynamicMacros::beforeReportingState()
     flag_hold_ &= heldFlagMods();
     pressFlagMods(flag_hold_);
   }
+
+  applyMask();
 
   for (uint8_t i = 0; i < MAX_RUNS; ++i) {
     runs_[i].flags &= (uint8_t)~F_FRESH;
@@ -1335,7 +1500,7 @@ EventHandlerResult DynamicMacros::beforeReportingState()
 
 EventHandlerResult DynamicMacros::onFocusEvent(const char *command)
 {
-  if (::Focus.handleHelp(command, PSTR("macros.map\nmacros.trigger\nmacros.memory"))) {
+  if (::Focus.handleHelp(command, PSTR("macros.map\nmacros.trigger\nmacros.memory\nmacros.state"))) {
     return EventHandlerResult::OK;
   }
 
@@ -1389,6 +1554,28 @@ EventHandlerResult DynamicMacros::onFocusEvent(const char *command)
         requestStop(i);
       }
     }
+  }
+
+  /* Reply with the run count, an id and state per run in slot order and the last error, then clear the error */
+  if (strcmp_P(command + 7, PSTR("state")) == 0) {
+    uint8_t n = 0;
+
+    for (uint8_t i = 0; i < MAX_RUNS; ++i) {
+      if (runs_[i].state != RUN_FREE) {
+        n++;
+      }
+    }
+
+    ::Focus.send(n);
+
+    for (uint8_t i = 0; i < MAX_RUNS; ++i) {
+      if (runs_[i].state != RUN_FREE) {
+        ::Focus.send(runs_[i].id, runs_[i].state);
+      }
+    }
+
+    ::Focus.send(last_error_);
+    last_error_ = ERR_NONE;
   }
 
   if (strcmp_P(command + 7, PSTR("memory")) == 0) {

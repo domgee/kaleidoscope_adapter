@@ -18,6 +18,8 @@
 #include "CapsWordDygma.h"
 #include "kbdfal_ll_memory.h"
 
+#include "DynamicMacrosDygma.h"
+
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
 #include "kaleidoscope/keyswitch_state.h"
@@ -265,6 +267,12 @@ void CapsWordTriggerDygma::cfgmem_continuation_save( uint8_t continuation_flags 
 EventHandlerResult CapsWordShiftDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
 {
   if (!CapsWordTrigger.isActive())
+  {
+    return EventHandlerResult::OK;
+  }
+
+  /* Neither shift Unicode hex input keys nor end the word on them */
+  if (::DynamicMacros.injectingProtocol())
   {
     return EventHandlerResult::OK;
   }

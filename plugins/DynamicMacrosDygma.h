@@ -24,6 +24,8 @@
 
 #include "kaleidoscope/plugin/Macros/MacroSteps.h"
 
+#include "UnicodeHexInput.h"
+
 #define DM(n) Key(kaleidoscope::ranges::DYNAMIC_MACRO_FIRST + n)
 
 namespace kaleidoscope {
@@ -77,9 +79,12 @@ class DynamicMacros : public kaleidoscope::Plugin {
   /* Return the trigger address of the macro injecting a key now, invalid when none injects or the macro has no address */
   KeyAddr injectingFor() const;
 
+  /* Return true while a macro injects a Unicode hex input key, which history and CapsWord ignore */
+  bool injectingProtocol() const;
+
  private:
   enum : uint8_t { RUN_FREE, RUN_PLAYING, RUN_WAITING, RUN_PAUSED, RUN_CHILD };
-  enum : uint8_t { SUB_NONE, SUB_TAP_RELEASE, SUB_SEQ, SUB_SEQ_RELEASE, SUB_CODESEQ, SUB_CODESEQ_RELEASE };
+  enum : uint8_t { SUB_NONE, SUB_TAP_RELEASE, SUB_SEQ, SUB_SEQ_RELEASE, SUB_CODESEQ, SUB_CODESEQ_RELEASE, SUB_UNICODE };
   enum : uint8_t { INJ_OK, INJ_ALREADY, INJ_FAILED };
 
   /* Run.flags */
@@ -96,7 +101,8 @@ class DynamicMacros : public kaleidoscope::Plugin {
   static constexpr uint8_t X_ONESHOT = 0x01;   /* OneShot was active at root start */
 
   /* Held.kind */
-  static constexpr uint8_t HELD_TEMP = 0x01;   /* tap or sequence press until its release */
+  static constexpr uint8_t HELD_TEMP     = 0x01;   /* tap, sequence or Unicode press until its release */
+  static constexpr uint8_t HELD_PROTOCOL = 0x02;   /* Unicode hex input key */
 
   struct Run {
     uint32_t due_ms;    /* Runtime.millisAtCycleStart() clock */
@@ -143,6 +149,11 @@ class DynamicMacros : public kaleidoscope::Plugin {
   uint8_t rr_             = 0;
   uint8_t last_error_     = ERR_NONE;
   uint8_t injecting_run_  = NONE;
+  bool    injecting_protocol_ = false;
+  uint8_t uni_owner_      = NONE;   /* run that plays a Unicode scalar, the others wait */
+  unicode_hex::Sequence uni_;
+  uint8_t mask_remove_last_ = 0;   /* macro modifier filter last set in KeyboardioHID */
+  uint8_t mask_add_last_    = 0;
   uint8_t flag_hold_      = 0;   /* Key flag modifiers kept for held keys after an injected release */
   bool    mask_reset_     = false;   /* a key press reset Kaleidoscope's modifier flag mask in this cycle */
   bool    timer_pending_  = false;
@@ -167,12 +178,13 @@ class DynamicMacros : public kaleidoscope::Plugin {
   uint8_t injectPress(uint8_t i, Key key, uint8_t kind);
   void releaseTemp(uint8_t i, Key key);
   void releasePersistent(uint8_t i, Key key);
-  void releaseEvent(uint8_t i, Key key);
+  void releaseEvent(uint8_t i, Key key, uint8_t kind);
   void releaseHeldOf(uint8_t i);
   void removeHeld(uint8_t h);
   void failStop(uint8_t i);
   void freeRun(uint8_t i);
 
+  bool otherReleasePending(uint8_t i) const;
   bool step(uint8_t i, uint32_t now);
   void endOfMacro(uint8_t i, uint32_t now);
   void finishTree(uint8_t i);
@@ -182,6 +194,7 @@ class DynamicMacros : public kaleidoscope::Plugin {
   void armTimer(uint32_t now);
   void abortAll(uint8_t err);
   void goIdle();
+  void applyMask();
   uint16_t randomDelay(uint16_t min_ms, uint16_t max_ms);
 
   uint8_t heldFlagMods() const;
