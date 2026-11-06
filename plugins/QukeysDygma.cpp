@@ -587,6 +587,31 @@ bool Qukeys::isDualUseKey(Key key) {
   return decodeDualUse(key, queue_head_.primary_key, queue_head_.alternate_key);
 }
 
+/* Superkey actions, read to rebuild the taps that DUM and DUL codes truncate */
+static const KeyRoleManager::keyrole_config_t *p_keyrole_config = nullptr;
+
+/* Return the first action of the Superkey a DUM or DUL code came from. The code keeps only 7 bits of the tap keycode, so taps such as macros
+ * and many consumer keys come out wrong without this. Keep the fallback for an unknown Superkey or an entry that no longer encodes code_low */
+static Key superkeyTap(const KeyRoleManager::modified_keys_t *entry, uint8_t code_low, Key fallback)
+{
+  if (p_keyrole_config == nullptr) {
+    return fallback;
+  }
+
+  uint16_t idx = static_cast<uint16_t>(entry->sk_id - ranges::DYNAMIC_SUPER_FIRST);
+  if (idx >= sizeof(p_keyrole_config->superkeys) / sizeof(p_keyrole_config->superkeys[0])) {
+    return fallback;
+  }
+
+  Key tap = Superkey::getActionAsKey(&p_keyrole_config->superkeys[idx], 0);
+  uint8_t tap_low = static_cast<uint8_t>((tap.getFlags() != 0 ? 0x80 : 0x00) | (tap.getKeyCode() & 0x7F));
+  if (tap_low != code_low) {
+    return fallback;
+  }
+
+  return tap;
+}
+
 /* Decode a DualUse key into its tap and hold keys without touching queue_head_. Leave both outputs unchanged for any other key */
 bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
   // Test for DualUse modifiers:
@@ -597,6 +622,7 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
     uint16_t offset = key.getRaw() - ranges::DUM_FIRST;
     uint8_t modifier_index = (offset >> 8) & 0xFF;  // Upper 8 bits = modifier index
     uint8_t keycode = offset & 0xFF;  // Lower 8 bits = keycode (+ flags offset)
+    uint8_t code_low = keycode;
     
     // If keycode >= 128, it means the tap has flags, extract only lower 7 bits
     if (keycode >= 128) {
@@ -638,6 +664,7 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
     if (action_flags != nullptr) 
     {
       primary.setFlags(action_flags->flags_action_1);
+      primary = superkeyTap(action_flags, code_low, primary);
       alternate.setFlags(action_flags->flags_action_2);
     }
     else 
@@ -660,6 +687,7 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
     
     // If offset >= 128 (in lower 8 bits), it means the tap has flags
     uint16_t keycode_offset = offset & 0xFF;
+    uint8_t code_low = static_cast<uint8_t>(keycode_offset);
     bool has_tap_flags = (keycode_offset >= 128);
     if (has_tap_flags) {
       keycode_offset = keycode_offset - 128;  // Remove the flags offset
@@ -674,6 +702,7 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
       //NRF_LOG_DEBUG("  Using action flags: action1_flags=0x%02X, action2_flags=0x%02X",
       //              action_flags->flags_action_1, action_flags->flags_action_2);
       primary.setFlags(action_flags->flags_action_1);
+      primary = superkeyTap(action_flags, code_low, primary);
     } else {
       //NRF_LOG_DEBUG("  No action flags, using default flags");
       primary.setFlags(0);
@@ -1644,6 +1673,9 @@ EventHandlerResult Qukeys::onSetup()
   ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
 
   loadDualFunction();
+
+  result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_KEYROLE, (const void **)&p_keyrole_config );
+  ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
 
   return EventHandlerResult::OK;
 
