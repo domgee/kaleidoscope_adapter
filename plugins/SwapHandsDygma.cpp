@@ -680,6 +680,11 @@ void SwapHandsDygma::drainOne()
 
   if (entry.release) {
     replayRelease(entry);
+
+    /* A release resolved by state leaves the key in NONE. Keep it buffered while a later press of it waits */
+    if (state(entry.phys) == NONE && hasQueuedPress(entry.phys, buffer_, buffer_len_)) {
+      setState(entry.phys, BUFFERED);
+    }
   } else {
     if (state(entry.phys) == BUFFERED) {
       setState(entry.phys, NONE);
@@ -740,10 +745,23 @@ void SwapHandsDygma::queueDeliveredRelease(KeyAddr phys, entry_t *entries, uint8
     if (entries[i].release && entries[i].phys == phys && entries[i].snap == BY_STATE) {
       entries[i].snap = st;
       entries[i].target = st == SWAPPED ? mirror(phys) : phys;
-      setState(phys, NONE);
+
+      /* Keep a later press of the same key buffered, so its held events wait and its release is bound when it drains */
+      setState(phys, hasQueuedPress(phys, entries + i + 1, count - i - 1) ? BUFFERED : NONE);
       return;
     }
   }
+}
+
+bool SwapHandsDygma::hasQueuedPress(KeyAddr phys, const entry_t *entries, uint8_t count)
+{
+  for (uint8_t i = 0; i < count; ++i) {
+    if (!entries[i].release && entries[i].phys == phys) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 void SwapHandsDygma::replayRelease(const entry_t &entry)
