@@ -289,7 +289,7 @@ bool Qukeys::processQueue() {
   // should be flushed (and if so, in which of its two states). We start with
   // the second event in the queue (index 1).
   for (uint8_t i{1}; i < event_queue_.length(); ++i) {
-    /* Settle the head by its timeout before an event that came after it. Only a per-key timeout lets a queued event outlive the head */
+    /* Settle the head by its timeout when a queued event comes at or past its deadline. Only a per-key timeout lets that happen */
     if (has_timeout_override_ && (uint16_t)(event_queue_.timestamp(i) - event_queue_.timestamp(0)) >= hold_timeout) {
       settleByTimeout();
       return true;
@@ -810,13 +810,15 @@ bool Qukeys::sameHandChord(KeyAddr head, uint8_t index, uint16_t term) const
          (uint16_t)(event_queue_.timestamp(index) - event_queue_.timestamp(0)) < term;
 }
 
-/* Mark the same-hand qukeys stacked before index `end` as taps, so they follow the head as taps when they reach the queue head */
+/* Mark the same-hand qukeys stacked before index `end` as taps, so they follow the head as taps when they reach the queue head.
+ * Skip a qukey whose own timeout ended before the deciding event, so its timeout resolves it */
 void Qukeys::settleSameHandTaps(KeyAddr head, uint8_t end, uint16_t term)
 {
   for (uint8_t j{1}; j < end; ++j) {
     KeyAddr k = event_queue_.addr(j);
 
-    if (event_queue_.isPress(j) && sameHandChord(head, j, term) && isStackableQukeyAt(k) && chordalFor(k)) {
+    if (event_queue_.isPress(j) && sameHandChord(head, j, term) && isStackableQukeyAt(k) && chordalFor(k) &&
+        (uint16_t)(event_queue_.timestamp(end) - event_queue_.timestamp(j)) < holdTimeout(k)) {
       forced_tap_mask_ |= (uint8_t)(1u << j);
     }
   }
@@ -1189,7 +1191,8 @@ bool Qukeys::readPerKey()
 bool Qukeys::headerAllowed(const DualFunctionHeader_t &header)
 {
   return header.mode <= DUALFUNC_MODE_TIMEOUT_ONLY && (header.options & (uint8_t)~DUALFUNC_OPT_MASK) == 0 &&
-         header.speculative_flow_term <= DUALFUNC_MAX_FLOW_TERM_MS && neutralizerAllowed(header.neutralizer);
+         header.speculative_flow_term <= DUALFUNC_MAX_FLOW_TERM_MS && neutralizerAllowed(header.neutralizer) && header.reserved[0] == 0 &&
+         header.reserved[1] == 0 && header.reserved[2] == 0;
 }
 
 /* Check one table entry. Load and write share it, so storage only holds what a write accepts */
