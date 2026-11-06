@@ -18,6 +18,8 @@
 #include "CombosDygma.h"
 #include "kbdfal_ll_memory.h"
 
+#include "DynamicMacrosDygma.h"
+
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
 #include "kaleidoscope/keyswitch_state.h"
@@ -566,10 +568,12 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
 
   if (!key_addr.isValid()) return EventHandlerResult::OK;
 
-  /* Report every genuine physical press to Qukeys before this plugin or a later one can consume it. Quick tap relies on this call */
+  /* Report every genuine physical press to Qukeys and DynamicMacros before this plugin or a later one can consume it. Quick tap and
+   * the macro stop by other keys rely on this call */
   if (keyToggledOn(key_state) && !keyRoleManager.isReplayingQueuedEvent())
   {
     qukeys.notePhysicalPress(key_addr);
+    ::DynamicMacros.notePhysicalPress(key_addr);
   }
 
   if (p_combos_config == nullptr) return EventHandlerResult::OK;

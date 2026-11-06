@@ -17,6 +17,7 @@
 
 #include "SwapHandsDygma.h"
 
+#include "DynamicMacrosDygma.h"
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
 #include "kaleidoscope/keyswitch_state.h"
@@ -328,6 +329,7 @@ void SwapHandsDygma::deliverPress(KeyAddr phys, uint32_t press_ms)
 
   if (isSwapCode(raw)) {
     ::qukeys.notePhysicalPress(phys);
+    ::DynamicMacros.notePhysicalPress(phys);
     setState(phys, CONTROL);
     controlPress(phys, raw, press_ms);
     return;
@@ -342,6 +344,7 @@ void SwapHandsDygma::deliverPress(KeyAddr phys, uint32_t press_ms)
     if (bitGet(occupied_, target)) {
       setState(phys, DROPPED);
       ::qukeys.notePhysicalPress(phys);
+      ::DynamicMacros.notePhysicalPress(phys);
       return;
     }
   }

@@ -19,6 +19,7 @@
 #include "kbdfal_ll_memory.h"
 
 #include "CombosDygma.h"
+#include "DynamicMacrosDygma.h"
 #include "HIDReportObserver.h"
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
@@ -99,9 +100,13 @@ void AltRepeatDygma::keyTyped(KeyAddr key_addr)
     return;
   }
 
-  /* Keep the keys a macro output injects without an address */
-  if (!key_addr.isValid() && repeat_press_) {
-    return;
+  /* Keep the keys a macro output injects without an address, during the repeat press or later from a macro the repeat key started */
+  if (!key_addr.isValid()) {
+    KeyAddr macro_addr = ::DynamicMacros.injectingFor();
+
+    if (repeat_press_ || (macro_addr.isValid() && macro_addr.toInt() == repeat_offset_ && repeat_at_addr_)) {
+      return;
+    }
   }
 
   repeat_valid_ = false;
