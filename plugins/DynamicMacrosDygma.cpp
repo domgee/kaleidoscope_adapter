@@ -47,9 +47,6 @@ static constexpr uint16_t MEM = sizeof(DynamicMacros::macros_config_t::memory);
 /* Modifier flags a Key carries */
 static constexpr uint8_t FLAG_MODS = CTRL_HELD | LALT_HELD | RALT_HELD | SHIFT_HELD | GUI_HELD;
 
-/* Layer_::layer_state_ is a uint32_t */
-static constexpr uint8_t MAX_LAYERS = 32;
-
 /* ------------------------------------------------------------------------- */
 /* Helpers                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -426,7 +423,7 @@ void DynamicMacros::startRoot(uint8_t id, KeyAddr key_addr)
   if (key_addr.isValid() && modeOf(r) == MODE_ONCE) {
     uint8_t owner = ownerLayer(key_addr);
 
-    if (owner != 0 && owner < MAX_LAYERS && firstMarker(r.body) == STEP_LAYER_OFF) {
+    if (owner != 0 && owner < LayerHoldModsDygma::MAX_LAYERS && firstMarker(r.body) == STEP_LAYER_OFF) {
       r.layer = owner;
     }
   }
@@ -1255,8 +1252,8 @@ void DynamicMacros::armTimer(uint32_t now)
     }
   }
 
-  /* Wake the next cycle for a layer change that came after this cycle's check */
-  if (ms == 0 && layer_wake_) {
+  /* Wake the next cycle for a layer change that came after this cycle's check, also before a longer wait */
+  if (layer_wake_) {
     ms = 1;
   }
 
@@ -1399,7 +1396,7 @@ void DynamicMacros::onMacroPress(uint8_t id, KeyAddr key_addr, uint8_t key_state
     return;
   }
 
-  /* Replay the press half while the run waits for its layer, and queue a replay while the press half plays. The key release is ignored */
+  /* Replay the press half while the run waits for its layer, and queue a replay while the press half plays. Ignore its key release */
   if (r.layer != NONE && !(r.flags & F_STOPPING)) {
     if (r.state == RUN_PAUSED) {
       restartPressHalf(r);
@@ -1483,9 +1480,9 @@ void DynamicMacros::notePhysicalPress(KeyAddr key_addr)
       continue;
     }
 
-    /* Skip the trigger while it is held, so a later press there counts as another key. Always skip it for a run that waits for its
-     * layer, since a press there replays the press half */
-    if (key_addr == r.trigger && (!(r.flags & F_RELEASED) || r.layer != NONE)) {
+    /* Skip the trigger while it is held, so a later press there counts as another key. Skip it during the press half of a run that
+     * waits for its layer, since a press there replays the press half */
+    if (key_addr == r.trigger && (!(r.flags & F_RELEASED) || (r.layer != NONE && !(r.flags & F_MARKER_SEEN)))) {
       continue;
     }
 

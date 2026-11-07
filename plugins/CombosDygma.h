@@ -111,7 +111,8 @@ class CombosDygma : public kaleidoscope::Plugin {
   /* Return true when the address belongs to a fired combo, so a replayed press there carries the combo's action and not the key's own */
   bool ownsAddress(KeyAddr key_addr) const;
 
-  /* Return the layer of the held combo when the address is its anchor, else 0xFF. The anchor may be transparent on that layer */
+  /* Return the layer of the combo whose action the address delivers now, else 0xFF. The anchor may be transparent on that layer.
+   * It covers the held combo's anchor and the Qukeys replay of an ended combo's action */
   uint8_t layerAt(KeyAddr key_addr) const;
 
  private:
@@ -160,10 +161,15 @@ class CombosDygma : public kaleidoscope::Plugin {
   struct PendingReplay {
     KeyAddr anchor;
     Key     action;
+    uint8_t layer;
   };
 
   PendingReplay pending_replays_[MAX_PENDING_REPLAYS];
   uint8_t       pending_replays_len_ = 0;
+
+  /* Anchor and combo layer of the last replay delivered after its combo ended, for layerAt() */
+  KeyAddr       replay_anchor_;
+  uint8_t       replay_layer_ = 0xFF;
 
   /* Re-entrancy guard. It must cover the WHOLE flush loop and mean "do not
    * buffer", not merely "do not consume": when the Qukeys queue fills up it
@@ -260,8 +266,8 @@ class CombosDygma : public kaleidoscope::Plugin {
 
   /* --- pending replays ------------------------------------------------ */
 
-  void addPendingReplay(KeyAddr anchor, Key action);
-  bool takePendingReplay(KeyAddr anchor, Key &action);
+  void addPendingReplay(KeyAddr anchor, Key action, uint8_t layer);
+  bool takePendingReplay(KeyAddr anchor, Key &action, uint8_t *layer = nullptr);
 
   /* Puts every piece of volatile state back to power-on values. A real reboot
    * gets this for free from static initialisation; doing it explicitly makes

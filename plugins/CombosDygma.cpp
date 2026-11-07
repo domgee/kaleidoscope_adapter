@@ -391,8 +391,11 @@ void CombosDygma::activateCombo(uint8_t index, KeyAddr anchor)
   layer_      = combo.layer;
   state_      = State::ACTIVE;
 
+  replay_anchor_ = KeyAddr();
+  replay_layer_  = 0xFF;
+
   /* Keep the replay target for both firing paths. Qukeys may queue the action press of an immediate firing too */
-  addPendingReplay(anchor_, action_key_);
+  addPendingReplay(anchor_, action_key_, layer_);
 
   buffer_len_ = 0;
 
@@ -429,7 +432,7 @@ void CombosDygma::fireDeferred(uint8_t index)
 }
 
 /* Replace any entry for the same anchor. When the table is full, drop the oldest entry. The Qukeys queue bound keeps that from happening */
-void CombosDygma::addPendingReplay(KeyAddr anchor, Key action)
+void CombosDygma::addPendingReplay(KeyAddr anchor, Key action, uint8_t layer)
 {
   Key unused;
   takePendingReplay(anchor, unused);
@@ -446,11 +449,12 @@ void CombosDygma::addPendingReplay(KeyAddr anchor, Key action)
 
   pending_replays_[pending_replays_len_].anchor = anchor;
   pending_replays_[pending_replays_len_].action = action;
+  pending_replays_[pending_replays_len_].layer = layer;
   pending_replays_len_++;
 }
 
-/* Remove the entry for this anchor and return its action */
-bool CombosDygma::takePendingReplay(KeyAddr anchor, Key &action)
+/* Remove the entry for this anchor and return its action, and its combo layer when asked */
+bool CombosDygma::takePendingReplay(KeyAddr anchor, Key &action, uint8_t *layer)
 {
   for (uint8_t i = 0; i < pending_replays_len_; ++i)
   {
@@ -460,6 +464,11 @@ bool CombosDygma::takePendingReplay(KeyAddr anchor, Key &action)
     }
 
     action = pending_replays_[i].action;
+
+    if (layer != nullptr)
+    {
+      *layer = pending_replays_[i].layer;
+    }
 
     for (uint8_t j = i + 1; j < pending_replays_len_; ++j)
     {
@@ -506,12 +515,23 @@ bool CombosDygma::ownsAddress(KeyAddr key_addr) const
 
 uint8_t CombosDygma::layerAt(KeyAddr key_addr) const
 {
-  if (!ownsAddress(key_addr) || key_addr != anchor_)
+  if (!ownsAddress(key_addr))
   {
     return 0xFF;
   }
 
-  return layer_;
+  if (state_ == State::ACTIVE && key_addr == anchor_)
+  {
+    return layer_;
+  }
+
+  /* The address stays owned until its next genuine press, which ends the replay's claim */
+  if (key_addr == replay_anchor_)
+  {
+    return replay_layer_;
+  }
+
+  return 0xFF;
 }
 
 void CombosDygma::endCombo(bool release_came_from_anchor)
@@ -646,10 +666,15 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
     /* Let the Qukeys replay of a combo's action press through. The combo ended before the replay arrived, and this is
      * the only press of the action. Swallowing it would lose the combo. Its release is queued behind it */
     Key replay_action;
+    uint8_t replay_layer = 0xFF;
 
-    if (keyToggledOn(key_state) && keyRoleManager.isReplayingQueuedEvent() && takePendingReplay(key_addr, replay_action))
+    if (keyToggledOn(key_state) && keyRoleManager.isReplayingQueuedEvent() && takePendingReplay(key_addr, replay_action, &replay_layer))
     {
       mapped_key = replay_action;
+
+      /* Keep the combo's layer for a macro the action starts */
+      replay_anchor_ = key_addr;
+      replay_layer_  = replay_layer;
 
       /* Restore the action in the live keymap so the queued release resolves to it */
       Layer.updateLiveCompositeKeymap(key_addr, replay_action);
@@ -1037,6 +1062,8 @@ void CombosDygma::resetVolatileState()
   member_count_ = 0;
   anchor_       = KeyAddr();
   flushing_     = false;
+  replay_anchor_ = KeyAddr();
+  replay_layer_  = 0xFF;
 
   last_press_ms_   = 0;
   has_prior_press_ = false;
