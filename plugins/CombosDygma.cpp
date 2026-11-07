@@ -388,6 +388,7 @@ void CombosDygma::activateCombo(uint8_t index, KeyAddr anchor)
 
   anchor_     = anchor;
   action_key_ = Key(combo.action);
+  layer_      = combo.layer;
   state_      = State::ACTIVE;
 
   /* Keep the replay target for both firing paths. Qukeys may queue the action press of an immediate firing too */
@@ -501,6 +502,16 @@ bool CombosDygma::swallowsHolds(KeyAddr key_addr) const
 bool CombosDygma::ownsAddress(KeyAddr key_addr) const
 {
   return key_addr.isValid() && !addrFlagGet(flushed_, key_addr) && addrFlagGet(owned_, key_addr);
+}
+
+uint8_t CombosDygma::layerAt(KeyAddr key_addr) const
+{
+  if (!ownsAddress(key_addr) || key_addr != anchor_)
+  {
+    return 0xFF;
+  }
+
+  return layer_;
 }
 
 void CombosDygma::endCombo(bool release_came_from_anchor)

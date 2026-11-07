@@ -111,6 +111,9 @@ class CombosDygma : public kaleidoscope::Plugin {
   /* Return true when the address belongs to a fired combo, so a replayed press there carries the combo's action and not the key's own */
   bool ownsAddress(KeyAddr key_addr) const;
 
+  /* Return the layer of the held combo when the address is its anchor, else 0xFF. The anchor may be transparent on that layer */
+  uint8_t layerAt(KeyAddr key_addr) const;
+
  private:
   enum class State : uint8_t {
     IDLE,        /* nothing buffered                                   */
@@ -147,6 +150,7 @@ class CombosDygma : public kaleidoscope::Plugin {
   uint8_t member_count_ = 0;
   KeyAddr anchor_;
   Key     action_key_;
+  uint8_t layer_ = 0xFF;
 
   /* Action presses of fired combos, kept until Qukeys replays them. A combo may end before its replay arrives, and the
    * `owned_` guard would then swallow it and lose the chord. The Qukeys queue holds 8 events. Every ended combo there

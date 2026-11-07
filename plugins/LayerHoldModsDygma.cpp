@@ -184,9 +184,7 @@ void LayerHoldModsDygma::dropInactiveOwners(bool in_report) {
 
     if (!Layer.isActive(layer)) {
       if (!shifts_read) {
-        shifted = heldLayerShifts();
-        /* Add the layers the conditional layer rules derive from the active and held layers, since they come back with them */
-        shifted |= ConditionalLayers.derived((uint16_t)((ConditionalLayersDygma::activeMask() | shifted) & ConditionalLayersDygma::LAYERS_MASK));
+        shifted = returningLayers();
         shifts_read = true;
       }
 
@@ -226,6 +224,13 @@ void LayerHoldModsDygma::releaseMods(uint8_t mods) {
       Runtime.hid().keyboard().releaseKey(mod.key);
     }
   }
+}
+
+uint32_t LayerHoldModsDygma::returningLayers() {
+  uint32_t shifted = heldLayerShifts();
+
+  /* Add the layers the conditional layer rules derive from the active and held layers, since they come back with them */
+  return shifted | ConditionalLayers.derived((uint16_t)((ConditionalLayersDygma::activeMask() | shifted) & ConditionalLayersDygma::LAYERS_MASK));
 }
 
 /* Return the layers that a pressed momentary layer key shifts to */

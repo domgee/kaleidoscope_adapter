@@ -19,14 +19,17 @@
 #include "kbdfal_ll_memory.h"
 
 #include "BaseDygma.h"
+#include "CombosDygma.h"
 #include "hidDefy.h"
 #include "KeyboardioHID.h"
+#include "LayerHoldModsDygma.h"
 #include "OneShotDygma.h"
 #include "QukeysDygma.h"
 
 #include "Kaleidoscope-FocusSerial.h"
 #include "kaleidoscope/key_events.h"
 #include "kaleidoscope/keyswitch_state.h"
+#include "kaleidoscope/layers.h"
 
 namespace kaleidoscope {
 namespace plugin {
@@ -43,6 +46,9 @@ static constexpr uint16_t MEM = sizeof(DynamicMacros::macros_config_t::memory);
 
 /* Modifier flags a Key carries */
 static constexpr uint8_t FLAG_MODS = CTRL_HELD | LALT_HELD | RALT_HELD | SHIFT_HELD | GUI_HELD;
+
+/* Layer_::layer_state_ is a uint32_t */
+static constexpr uint8_t MAX_LAYERS = 32;
 
 /* ------------------------------------------------------------------------- */
 /* Helpers                                                                   */
@@ -280,6 +286,33 @@ void DynamicMacros::optionsOf(uint8_t id, uint8_t &opts, uint16_t &body)
   body = start + 2;
 }
 
+/* Return the type of the first pause marker from pos on, or 0 when the macro has none */
+uint8_t DynamicMacros::firstMarker(uint16_t pos)
+{
+  const uint8_t *mem = p_macros_config->memory;
+
+  while (pos < MEM) {
+    uint8_t type = mem[pos++];
+
+    if (type == MACRO_ACTION_END) {
+      return 0;
+    }
+
+    if (type == STEP_RELEASE || type == STEP_LAYER_OFF) {
+      return type;
+    }
+
+    /* A step cut off by the memory end ends the macro, as in step */
+    if (pos + fixedLength(type) > MEM) {
+      return 0;
+    }
+
+    pos += stepLength(pos, type);
+  }
+
+  return 0;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Runs                                                                      */
 /* ------------------------------------------------------------------------- */
@@ -309,6 +342,24 @@ uint8_t DynamicMacros::modeOf(const Run &r) const
   return (r.parent == NONE) ? (uint8_t)(r.opts & OPT_MODE) : MODE_ONCE;
 }
 
+/* Return the layer that defines the key at a valid address. A combo's action belongs to the combo's layer, which its anchor may not show */
+uint8_t DynamicMacros::ownerLayer(KeyAddr key_addr) const
+{
+  uint8_t layer = ::Combos.layerAt(key_addr);
+
+  if (layer == NONE) {
+    layer = Layer.lookupActiveLayer(key_addr);
+  }
+
+  return layer;
+}
+
+/* Return true while the layer is on, or a held layer key or a conditional layer rule brings it back on its next event */
+bool DynamicMacros::layerHeld(uint8_t layer) const
+{
+  return Layer.isActive(layer) || (LayerHoldModsDygma::returningLayers() & ((uint32_t)1 << layer)) != 0;
+}
+
 KeyAddr DynamicMacros::injectingFor() const
 {
   if (injecting_run_ == NONE) {
@@ -333,6 +384,14 @@ void DynamicMacros::requestStop(uint8_t root)
 {
   runs_[root].flags |= F_STOPPING;
   wakeSoon();
+}
+
+/* Play the steps before the pause marker again. The run keeps its held keys, and a key press it already holds is skipped */
+void DynamicMacros::restartPressHalf(Run &r)
+{
+  r.pos = r.body;
+  r.sub = SUB_NONE;
+  r.flags &= (uint8_t)~(F_MARKER_SEEN | F_EXPLICIT);
 }
 
 void DynamicMacros::startRoot(uint8_t id, KeyAddr key_addr)
@@ -360,6 +419,17 @@ void DynamicMacros::startRoot(uint8_t id, KeyAddr key_addr)
   r.due_ms = Runtime.millisAtCycleStart();
   r.flags = F_FRESH | (key_addr.isValid() ? 0 : F_RELEASED);
   r.xflags = ::OneShot.isActive() ? X_ONESHOT : 0;
+  r.layer = NONE;
+  r.replays = 0;
+
+  /* Wait for the key's layer at a first marker that asks for it. Layer 0 never turns off, so there it waits for the release */
+  if (key_addr.isValid() && modeOf(r) == MODE_ONCE) {
+    uint8_t owner = ownerLayer(key_addr);
+
+    if (owner != 0 && owner < MAX_LAYERS && firstMarker(r.body) == STEP_LAYER_OFF) {
+      r.layer = owner;
+    }
+  }
 
   active_count_++;
   wakeSoon();
@@ -412,6 +482,8 @@ bool DynamicMacros::startChild(uint8_t i, uint8_t id)
   child.due_ms = Runtime.millisAtCycleStart();
   child.flags = F_RELEASED;
   child.xflags = 0;
+  child.layer = NONE;
+  child.replays = 0;
 
   runs_[i].state = RUN_CHILD;
   active_count_++;
@@ -932,11 +1004,43 @@ bool DynamicMacros::step(uint8_t i, uint32_t now)
       continue;
 
     case STEP_RELEASE:
+    case STEP_LAYER_OFF:
       r.pos = p;
 
-      /* Pause at the first marker of a root that plays once, until its key is released */
+      /* Pause at the first marker of a root that plays once, until its key is released or its layer turns off */
       if (r.parent == NONE && modeOf(r) == MODE_ONCE && !(r.flags & F_MARKER_SEEN)) {
         r.flags |= F_MARKER_SEEN;
+
+        if (type == STEP_LAYER_OFF && r.layer != NONE) {
+          /* Turn a Superkey's second send into one more press half, so the whole macro does not play again after the layer */
+          if (r.flags & F_REPLAY) {
+            r.flags &= (uint8_t)~F_REPLAY;
+
+            if (r.replays != 0xFF) {
+              r.replays++;
+            }
+          }
+
+          /* Play the press half once more for every press of the key while it played */
+          if (r.replays != 0) {
+            r.replays--;
+            restartPressHalf(r);
+            return batch;
+          }
+
+          if (layerHeld(r.layer)) {
+            r.state = RUN_PAUSED;
+
+            /* Check again on the next event, since releasing the key that brings the layer back changes no layer */
+            if (!Layer.isActive(r.layer)) {
+              layer_check_ = true;
+            }
+
+            return batch;
+          }
+
+          continue;
+        }
 
         if (!(r.flags & F_RELEASED)) {
           r.state = RUN_PAUSED;
@@ -1151,6 +1255,11 @@ void DynamicMacros::armTimer(uint32_t now)
     }
   }
 
+  /* Wake the next cycle for a layer change that came after this cycle's check */
+  if (ms == 0 && layer_wake_) {
+    ms = 1;
+  }
+
   if (ms == 0) {
     timer_pending_ = false;
     return;
@@ -1163,6 +1272,8 @@ void DynamicMacros::armTimer(uint32_t now)
 void DynamicMacros::goIdle()
 {
   timer_pending_ = false;
+  layer_check_ = false;
+  layer_wake_ = false;
   flag_hold_ = 0;
   mask_reset_ = false;
   rr_ = 0;
@@ -1288,6 +1399,24 @@ void DynamicMacros::onMacroPress(uint8_t id, KeyAddr key_addr, uint8_t key_state
     return;
   }
 
+  /* Replay the press half while the run waits for its layer, and queue a replay while the press half plays. The key release is ignored */
+  if (r.layer != NONE && !(r.flags & F_STOPPING)) {
+    if (r.state == RUN_PAUSED) {
+      restartPressHalf(r);
+      r.state = RUN_PLAYING;
+      wakeSoon();
+      return;
+    }
+
+    if (!(r.flags & F_MARKER_SEEN)) {
+      if (r.replays != 0xFF) {
+        r.replays++;
+      }
+
+      return;
+    }
+  }
+
   /* Stop the macro on its own key, also while it waits for the release. The release half never plays */
   requestStop(i);
   addToken(key_addr, &r.id, 1);
@@ -1314,7 +1443,8 @@ void DynamicMacros::onTriggerReleased(uint8_t i)
 
   r.flags |= F_RELEASED;
 
-  if (r.state == RUN_PAUSED) {
+  /* Resume a run that waits for the release. A run that waits for its layer goes on when the layer turns off */
+  if (r.state == RUN_PAUSED && r.layer == NONE) {
     r.state = RUN_PLAYING;
     wakeSoon();
   }
@@ -1353,8 +1483,9 @@ void DynamicMacros::notePhysicalPress(KeyAddr key_addr)
       continue;
     }
 
-    /* Skip the trigger only while it is held, so a later press there counts as another key */
-    if (key_addr == r.trigger && !(r.flags & F_RELEASED)) {
+    /* Skip the trigger while it is held, so a later press there counts as another key. Always skip it for a run that waits for its
+     * layer, since a press there replays the press half */
+    if (key_addr == r.trigger && (!(r.flags & F_RELEASED) || r.layer != NONE)) {
       continue;
     }
 
@@ -1424,6 +1555,8 @@ EventHandlerResult DynamicMacros::onKeyswitchEvent(Key &mappedKey, KeyAddr key_a
 
 EventHandlerResult DynamicMacros::beforeEachCycle()
 {
+  report_built_ = false;
+
   if (active_count_ == 0) {
     return EventHandlerResult::OK;
   }
@@ -1442,6 +1575,8 @@ EventHandlerResult DynamicMacros::beforeEachCycle()
 
 EventHandlerResult DynamicMacros::beforeReportingState()
 {
+  report_built_ = true;
+
   if (active_count_ == 0) {
     return EventHandlerResult::OK;
   }
@@ -1471,6 +1606,7 @@ EventHandlerResult DynamicMacros::beforeReportingState()
     }
   }
 
+  checkLayers();
   finishStops();
 
   bool playing = false;
@@ -1508,13 +1644,66 @@ EventHandlerResult DynamicMacros::beforeReportingState()
   return EventHandlerResult::OK;
 }
 
+/* Mark a change for the runs that wait for their layer. Only set flags, since ConditionalLayers and macro layer keys call this nested */
+EventHandlerResult DynamicMacros::onLayerChange()
+{
+  if (active_count_ == 0) {
+    return EventHandlerResult::OK;
+  }
+
+  for (uint8_t i = 0; i < MAX_RUNS; ++i) {
+    if (runs_[i].state != RUN_PAUSED || runs_[i].layer == NONE) {
+      continue;
+    }
+
+    layer_check_ = true;
+
+    /* Wake once more when the report is already built, such as for a Focus layer command or OneShot afterEachCycle */
+    if (report_built_) {
+      layer_wake_ = true;
+      wakeSoon();
+    }
+
+    break;
+  }
+
+  return EventHandlerResult::OK;
+}
+
+/* Resume the runs whose layer turned off and nothing brings back */
+void DynamicMacros::checkLayers()
+{
+  if (!layer_check_) {
+    return;
+  }
+
+  layer_check_ = false;
+  layer_wake_ = false;
+
+  for (uint8_t i = 0; i < MAX_RUNS; ++i) {
+    Run &r = runs_[i];
+
+    if (r.state != RUN_PAUSED || r.layer == NONE || Layer.isActive(r.layer)) {
+      continue;
+    }
+
+    /* Keep the run paused while a held key brings the layer back on its next event, and check again then */
+    if (layerHeld(r.layer)) {
+      layer_check_ = true;
+      continue;
+    }
+
+    r.state = RUN_PLAYING;
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* Focus                                                                     */
 /* ------------------------------------------------------------------------- */
 
 EventHandlerResult DynamicMacros::onFocusEvent(const char *command)
 {
-  if (::Focus.handleHelp(command, PSTR("macros.map\nmacros.trigger\nmacros.memory\nmacros.state"))) {
+  if (::Focus.handleHelp(command, PSTR("macros.map\nmacros.trigger\nmacros.memory\nmacros.state\nmacros.steps"))) {
     return EventHandlerResult::OK;
   }
 
@@ -1590,6 +1779,11 @@ EventHandlerResult DynamicMacros::onFocusEvent(const char *command)
 
     ::Focus.send(last_error_);
     last_error_ = ERR_NONE;
+  }
+
+  /* Reply with the highest step type the player knows, so Bazecor writes no step it cannot play */
+  if (strcmp_P(command + 7, PSTR("steps")) == 0) {
+    ::Focus.send((uint8_t)STEP_LAST);
   }
 
   if (strcmp_P(command + 7, PSTR("memory")) == 0) {

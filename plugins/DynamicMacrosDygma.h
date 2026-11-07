@@ -43,6 +43,8 @@ class DynamicMacros : public kaleidoscope::Plugin {
   static constexpr uint8_t STEP_OPTIONS = 14;
   static constexpr uint8_t STEP_RELEASE = 15;
   static constexpr uint8_t STEP_UNICODE = 16;
+  static constexpr uint8_t STEP_LAYER_OFF = 17;
+  static constexpr uint8_t STEP_LAST = STEP_LAYER_OFF;   /* macros.steps replies with it */
 
   /* Option byte of STEP_OPTIONS. A macro without the step has OPT_VALID only */
   static constexpr uint8_t OPT_VALID           = 0x80;
@@ -70,6 +72,7 @@ class DynamicMacros : public kaleidoscope::Plugin {
   EventHandlerResult onFocusEvent(const char *command);
   EventHandlerResult beforeEachCycle();
   EventHandlerResult beforeReportingState();
+  EventHandlerResult onLayerChange();
 
   static void reserve_storage( void );
 
@@ -90,7 +93,7 @@ class DynamicMacros : public kaleidoscope::Plugin {
   /* Run.flags */
   static constexpr uint8_t F_RELEASED    = 0x01;   /* the trigger is up, or the run has no trigger */
   static constexpr uint8_t F_EXPLICIT    = 0x02;   /* inside an explicit-report block */
-  static constexpr uint8_t F_MARKER_SEEN = 0x04;   /* passed the release marker */
+  static constexpr uint8_t F_MARKER_SEEN = 0x04;   /* passed the pause marker */
   static constexpr uint8_t F_FRESH       = 0x08;   /* started in this cycle */
   static constexpr uint8_t F_REPLAY      = 0x10;   /* play once more after END */
   static constexpr uint8_t F_STOPPING    = 0x20;   /* root only, finish the tree */
@@ -117,6 +120,8 @@ class DynamicMacros : public kaleidoscope::Plugin {
     uint8_t  sub;
     uint8_t  parent;
     uint8_t  xflags;
+    uint8_t  layer;     /* owner layer the pause marker waits for, NONE when it waits for the release */
+    uint8_t  replays;   /* queued replays of the press half */
   };
 
   struct Held {
@@ -139,6 +144,7 @@ class DynamicMacros : public kaleidoscope::Plugin {
   static void updateDynamicMacroCache(void);
   static uint16_t stepLength(uint16_t pos, uint8_t type);
   static void optionsOf(uint8_t id, uint8_t &opts, uint16_t &body);
+  static uint8_t firstMarker(uint16_t pos);
 
   Run     runs_[MAX_RUNS];
   Held    held_[MAX_HELD];
@@ -158,6 +164,9 @@ class DynamicMacros : public kaleidoscope::Plugin {
   uint8_t flag_hold_      = 0;   /* Key flag modifiers kept for held keys after an injected release */
   bool    mask_reset_     = false;   /* a key press reset Kaleidoscope's modifier flag mask in this cycle */
   bool    timer_pending_  = false;
+  bool    layer_check_    = false;   /* a run paused for its layer must check whether the layer is off */
+  bool    layer_wake_     = false;   /* a layer changed after this cycle's check, so the timer must wake the next cycle */
+  bool    report_built_   = false;   /* beforeReportingState ran in this cycle */
   kbdtimer_t timer_       = 0;
   uint32_t rng_           = 0;
 
@@ -168,10 +177,14 @@ class DynamicMacros : public kaleidoscope::Plugin {
   bool startChild(uint8_t i, uint8_t id);
   void requestStop(uint8_t root);
   void wakeSoon();
+  void restartPressHalf(Run &r);
+  void checkLayers();
 
   uint8_t findRun(uint8_t id) const;
   uint8_t rootOf(uint8_t i) const;
   uint8_t modeOf(const Run &r) const;
+  uint8_t ownerLayer(KeyAddr key_addr) const;
+  bool layerHeld(uint8_t layer) const;
 
   void addToken(KeyAddr key_addr, const uint8_t *ids, uint8_t count);
   void dropToken(uint8_t t);

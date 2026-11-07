@@ -39,6 +39,10 @@ class LayerHoldModsDygma : public kaleidoscope::Plugin {
     return held_mods_;
   }
 
+  /* Return the layers that a held momentary layer key, or a conditional layer rule on the active and held layers, brings back on its
+   * next event. DynamicMacros keeps a macro paused for such a layer */
+  static uint32_t returningLayers();
+
   static constexpr uint8_t  HOLD_FLAG        = 0x20;
   static constexpr uint16_t RAW_MASK         = 0xE000;  /* HOLD_FLAG, SYNTHETIC and RESERVED */
   static constexpr uint16_t RAW_HOLD         = 0x2000;
