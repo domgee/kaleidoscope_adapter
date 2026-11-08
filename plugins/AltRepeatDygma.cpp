@@ -313,6 +313,11 @@ bool AltRepeatDygma::outputAllowed(uint16_t output)
     return false;
   }
 
+  /* Take a partial layer hold code only in the shape a holdmods.map entry accepts. The table may change later without the rules */
+  if ((output & LayerHoldModsDygma::PARTIAL_MASK) == LayerHoldModsDygma::RAW_PARTIAL) {
+    return LayerHoldModsDygma::partialShape(output);
+  }
+
   if ((output & LayerHoldModsDygma::RAW_MASK) != LayerHoldModsDygma::RAW_HOLD) {
     return true;
   }
