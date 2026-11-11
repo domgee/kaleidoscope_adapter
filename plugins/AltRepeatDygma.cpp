@@ -259,17 +259,19 @@ bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
     return false;
   }
 
-  if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST) {
+  /* Qukeys plays a dual-function Superkey like a dual-use key, so the replay is its resolved tap or hold */
+  bool dual = (raw >= ranges::DU_FIRST && raw <= ranges::DU_LAST) || keyRoleManager.is_dual_function_superkey(cell);
+
+  if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST && !dual) {
     return false;
   }
 
-  /* TapDance, Leader, Cycle, Syster, TopsyTurvy, Steno, SpaceCadet, Redial, Turbo and static macro codes. None of those plugins
-   * runs here, and a Superkey holding Layer Shift 8 or 9 converts into this range */
+  /* TapDance, Leader, Cycle, Syster, TopsyTurvy, Steno, SpaceCadet, Redial, Turbo and static macro codes. None of those plugins runs here */
   if (raw > ranges::DU_LAST && raw < ranges::DYNAMIC_MACRO_FIRST) {
     return false;
   }
 
-  if (raw >= ranges::DU_FIRST && raw <= ranges::DU_LAST) {
+  if (dual) {
     uint8_t keycode = mapped_key.getKeyCode();
 
     return (mapped_key.getFlags() & (SYNTHETIC | RESERVED)) == 0 && keycode != 0 &&

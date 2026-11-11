@@ -156,7 +156,8 @@ bool CombosDygma::comboContainsBuffer(const combo_entry_t &combo) const
  * inside the window is let through after the flush, and Qukeys replays are
  * never buffered.
  *
- * SuperKeys and OverlayKeys are still refused. The SuperKeys timeline counts
+ * Dual-function Superkeys can too, since Qukeys plays them like a dual-use key.
+ * Other SuperKeys and OverlayKeys are still refused. The SuperKeys timeline counts
  * taps and interruptions against real press times and has not been validated
  * behind a buffer; an OverlayKey is not a key to type. Bazecor is supposed to
  * prevent assigning them, but an old blob would otherwise build a combo on top
@@ -168,7 +169,12 @@ bool CombosDygma::positionAllowed(KeyAddr key_addr, Key mapped_key) const
 {
   uint16_t raw = mapped_key.getRaw();
 
-  if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST) return false; /* superkey */
+  /* Refuse a Superkey unless Qukeys plays it as a dual-function key */
+  if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST && !keyRoleManager.is_dual_function_superkey(mapped_key))
+  {
+    return false;
+  }
+
   if (raw >= ranges::OVERLAY_KEY && raw <= ranges::OVERLAY_HOLD) return false;        /* overlay  */
 
   /* Refuse swap cells and SH_T taps, which SwapHands already turned into their tap key */
