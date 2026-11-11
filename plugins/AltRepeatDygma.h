@@ -131,6 +131,10 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
   /* Record a typing key that reached the report without a toggle-on, such as a key override's deferred register */
   void noteTyped(Key key, KeyAddr key_addr);
 
+  /* What the Repeat key sends now. The newest pending key with the modifiers of the report being built, else the Repeat record.
+   * Key_NoKey when empty */
+  Key repeatSource() const;
+
  private:
   /* Keys pressed since the last report, normally one or two. An injected release takes its key out at once.
    * 16 bounds a burst of injected presses before one report, and the oldest goes first when it is exceeded */
@@ -138,7 +142,7 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
 
   struct Pending {
     uint8_t keycode;
-    uint8_t flags;   /* the key's own MODS_MASK flags, AltGr folded into Alt */
+    uint8_t flags;   /* the key's own flags with AltGr kept (AltRepeatDygma::MODS_MASK | RALT_HELD) */
     uint8_t layer;   /* the layer that defines the key, 0 for keys without an address */
   };
 
@@ -147,8 +151,39 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
   uint16_t previous_    = 0;   /* 0 matches no rule */
   uint8_t  previous_layer_ = 0;
 
+  /* The last reported typing key with that report's modifiers. AltGr kept, Ctrl/Shift/Gui left. Never forgotten by layer changes */
+  Key repeat_ = Key_NoKey;
+
   /* Forget a key typed on a layer that is off, so it cannot trigger a rule after the layer was left */
   static bool layerLeft(uint8_t layer);
+};
+
+/* Repeat key. Sends the last key the host got, with its modifiers, until this press is released. Registered right after keyRoleManager */
+class RepeatKeyDygma : public kaleidoscope::Plugin {
+ public:
+  static constexpr uint16_t REPEAT_KEY = ranges::REDIAL;   /* 53594, 0xD15A. RESERVED, so older firmware ignores it */
+
+  EventHandlerResult onSetup();
+  EventHandlerResult onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state);
+  EventHandlerResult onFocusEvent(const char *command);
+
+  /* On a genuine press. Put the output back while the earlier release is still queued, else end the old press */
+  void repair(KeyAddr key_addr, uint8_t key_state);
+
+  /* True while a Repeat press at this address is live. False for invalid and untracked addresses */
+  bool owns(KeyAddr key_addr) const;
+
+ private:
+  static constexpr uint8_t MAX_TRACKED_KEYS = AltRepeatDygma::MAX_TRACKED_KEYS;
+
+  Key     out_[MAX_TRACKED_KEYS];          /* resolved output per address, Key_NoKey for an empty-history press */
+  uint8_t owned_[MAX_TRACKED_KEYS / 8];
+
+  static bool held(KeyAddr key_addr);
+  void own(uint8_t offset, Key out);
+  void drop(uint8_t offset);
+  Key cacheKey(uint8_t offset) const;     /* out_, or REPEAT_KEY, which stays inert in the live keymap */
+  EventHandlerResult deliver(Key &mapped_key, KeyAddr key_addr, uint8_t offset);
 };
 
 }
@@ -157,3 +192,4 @@ class AltRepeatTrackDygma : public kaleidoscope::Plugin {
 extern kaleidoscope::plugin::AltRepeatDygma AltRepeat;
 extern kaleidoscope::plugin::AltRepeatRepairDygma AltRepeatRepair;
 extern kaleidoscope::plugin::AltRepeatTrackDygma AltRepeatTrack;
+extern kaleidoscope::plugin::RepeatKeyDygma RepeatKey;

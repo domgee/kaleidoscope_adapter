@@ -526,6 +526,9 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
     prior_keypress_timestamp_ = event_queue_.timestamp(0);
   }
 
+  bool press = !event_queue_.isRelease(0);
+  uint16_t press_ts = event_queue_.timestamp(0);
+
   // Remove the head event from the queue:
   event_queue_.shift();
   forced_tap_mask_ >>= 1;
@@ -533,6 +536,11 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   flushing_queue_ = true;
   handleKeyswitchEvent(event_key, queue_head_addr, keyswitch_state);
   flushing_queue_ = false;
+
+  /* Count a press that resolved to the Repeat key, also as a rule output, by the key it sent */
+  if (press && ::RepeatKey.owns(queue_head_addr) && isPrintable(Layer.lookup(queue_head_addr))) {
+    prior_keypress_timestamp_ = press_ts;
+  }
 
   /* The hold is still in this cycle's report, so the neutralizer goes out before the tap in the next one */
   if (retro_release) {
@@ -1015,7 +1023,7 @@ void Qukeys::emitRetroPress()
   /* Release the key the press left in the live cache, which keeps a rewrite such as AltRepeat's */
   retro_release_key_ = Layer.lookup(retro_addr_);
 
-  if (isPrintable(retro_tap_)) {
+  if (isPrintable(retro_tap_) || (::RepeatKey.owns(retro_addr_) && isPrintable(retro_release_key_))) {
     prior_keypress_timestamp_ = Runtime.millisAtCycleStart();
   }
 

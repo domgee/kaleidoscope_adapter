@@ -46,6 +46,56 @@ static uint8_t foldFlags(uint8_t flags)
   return flags & AltRepeatDygma::MODS_MASK;
 }
 
+/* Map an NKRO modifier byte to key flags. Keep AltGr, and replay right Ctrl, Shift and Gui as left */
+static uint8_t replayFlags(uint8_t mods)
+{
+  uint8_t flags = 0;
+
+  if (mods & 0x11) {
+    flags |= CTRL_HELD;
+  }
+
+  if (mods & 0x22) {
+    flags |= SHIFT_HELD;
+  }
+
+  if (mods & 0x04) {
+    flags |= LALT_HELD;
+  }
+
+  if (mods & 0x40) {
+    flags |= RALT_HELD;
+  }
+
+  if (mods & 0x88) {
+    flags |= GUI_HELD;
+  }
+
+  return flags;
+}
+
+/* The modifiers pressed so far in the report being built, as key flags with AltGr kept */
+static uint8_t reportModFlags()
+{
+  static const struct {
+    Key key;
+    uint8_t flag;
+  } MODS[] = {
+    {Key_LeftControl, CTRL_HELD}, {Key_RightControl, CTRL_HELD}, {Key_LeftShift, SHIFT_HELD}, {Key_RightShift, SHIFT_HELD},
+    {Key_LeftAlt, LALT_HELD}, {Key_RightAlt, RALT_HELD}, {Key_LeftGui, GUI_HELD}, {Key_RightGui, GUI_HELD},
+  };
+
+  uint8_t flags = 0;
+
+  for (const auto &mod : MODS) {
+    if (Runtime.hid().keyboard().isModifierKeyActive(mod.key)) {
+      flags |= mod.flag;
+    }
+  }
+
+  return flags;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Substitution                                                              */
 /* ------------------------------------------------------------------------- */
@@ -70,7 +120,9 @@ void AltRepeatDygma::repairCache(KeyAddr key_addr, uint8_t key_state)
 
 EventHandlerResult AltRepeatRepairDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
 {
+  /* RepeatKey goes last, so its output wins over a rule whose output is the Repeat key */
   AltRepeat.repairCache(key_addr, key_state);
+  ::RepeatKey.repair(key_addr, key_state);
   return EventHandlerResult::OK;
 }
 
@@ -153,8 +205,9 @@ EventHandlerResult AltRepeatDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
   }
 
   if (!keyRoleManager.isReplayingQueuedEvent()) {
-    /* Repeat the repair for a press Combos flushes now, since its re-entry refreshed the live keymap again */
+    /* Repeat both repairs after Combos, which may have rewritten the press and the live keymap to a combo action in place */
     repairCache(key_addr, key_state);
+    ::RepeatKey.repair(key_addr, key_state);
     return EventHandlerResult::OK;
   }
 
@@ -553,6 +606,7 @@ EventHandlerResult AltRepeatTrackDygma::onSetup()
   pending_len_ = 0;
   previous_ = 0;
   previous_layer_ = 0;
+  repeat_ = Key_NoKey;
   chained_hook = HIDReportObserver::resetHook(observeReport);
   return EventHandlerResult::OK;
 }
@@ -610,6 +664,11 @@ EventHandlerResult AltRepeatTrackDygma::onKeyswitchEvent(Key &mapped_key, KeyAdd
 
 void AltRepeatTrackDygma::noteTyped(Key key, KeyAddr key_addr)
 {
+  /* Keep Repeat output out of both histories, so the next Repeat and the previous-key rules see the key before it */
+  if (::RepeatKey.owns(key_addr)) {
+    return;
+  }
+
   uint8_t keycode = key.getKeyCode();
 
   AltRepeat.keyTyped(key_addr);
@@ -629,7 +688,7 @@ void AltRepeatTrackDygma::noteTyped(Key key, KeyAddr key_addr)
   }
 
   pending_[pending_len_].keycode = keycode;
-  pending_[pending_len_].flags = foldFlags(key.getFlags());
+  pending_[pending_len_].flags = key.getFlags() & (AltRepeatDygma::MODS_MASK | RALT_HELD);
   pending_[pending_len_].layer = key_addr.isValid() ? Layer.lookupActiveLayer(key_addr) : 0;
   pending_len_++;
 }
@@ -665,29 +724,25 @@ uint16_t AltRepeatTrackDygma::decisionPrevious() const
   }
 
   /* Not in a report yet. Take the key's own flags plus the modifiers pressed so far in the report being built */
-  static const struct {
-    Key key;
-    uint8_t flag;
-  } MODS[] = {
-    {Key_LeftControl, CTRL_HELD}, {Key_RightControl, CTRL_HELD}, {Key_LeftShift, SHIFT_HELD}, {Key_RightShift, SHIFT_HELD},
-    {Key_LeftAlt, LALT_HELD}, {Key_RightAlt, LALT_HELD}, {Key_LeftGui, GUI_HELD}, {Key_RightGui, GUI_HELD},
-  };
-
   const Pending &newest = pending_[pending_len_ - 1];
 
   if (layerLeft(newest.layer)) {
     return 0;
   }
 
-  uint8_t flags = newest.flags;
+  uint8_t flags = newest.flags | reportModFlags();
+  return (uint16_t)((foldFlags(flags) << 8) | newest.keycode);
+}
 
-  for (const auto &mod : MODS) {
-    if (Runtime.hid().keyboard().isModifierKeyActive(mod.key)) {
-      flags |= mod.flag;
-    }
+Key AltRepeatTrackDygma::repeatSource() const
+{
+  if (pending_len_ == 0) {
+    return repeat_;
   }
 
-  return (uint16_t)((foldFlags(flags) << 8) | newest.keycode);
+  /* Two decisions in one cycle. Take the newest in logical order with the modifiers pressed so far in the report being built */
+  const Pending &newest = pending_[pending_len_ - 1];
+  return Key(newest.keycode, (uint8_t)(newest.flags | reportModFlags()));
 }
 
 void AltRepeatTrackDygma::commitReport(uint8_t id, const void *data, int len)
@@ -701,6 +756,7 @@ void AltRepeatTrackDygma::commitReport(uint8_t id, const void *data, int len)
   /* Fold left and right modifiers of the report. AltGr counts as Alt */
   uint8_t sides = (uint8_t)((report[0] | (report[0] >> 4)) & 0x0F);
   uint8_t flags = 0;
+  uint8_t replay = replayFlags(report[0]);
 
   if (sides & 0x01) {
     flags |= CTRL_HELD;
@@ -726,6 +782,8 @@ void AltRepeatTrackDygma::commitReport(uint8_t id, const void *data, int len)
     int byte = 1 + keycode / 8;
 
     if (byte < len && (report[byte] & (1 << (keycode % 8)))) {
+      repeat_ = Key(keycode, replay);
+
       /* A key whose layer turned off before its report reached the host is forgotten at once */
       previous_ = layerLeft(pending_[i].layer) ? 0 : (uint16_t)((flags << 8) | keycode);
       previous_layer_ = pending_[i].layer;
@@ -737,9 +795,162 @@ void AltRepeatTrackDygma::commitReport(uint8_t id, const void *data, int len)
   pending_len_ = kept;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Repeat key                                                                */
+/* ------------------------------------------------------------------------- */
+
+EventHandlerResult RepeatKeyDygma::onSetup()
+{
+  for (uint8_t i = 0; i < MAX_TRACKED_KEYS; ++i) {
+    out_[i] = Key_NoKey;
+  }
+
+  memset(owned_, 0, sizeof(owned_));
+  return EventHandlerResult::OK;
+}
+
+bool RepeatKeyDygma::owns(KeyAddr key_addr) const
+{
+  if (!key_addr.isValid()) {
+    return false;
+  }
+
+  uint8_t offset = key_addr.toInt();
+  return offset < MAX_TRACKED_KEYS && (owned_[offset >> 3] & (1 << (offset & 7)));
+}
+
+/* Still down, physically or as a release waiting in the Qukeys queue */
+bool RepeatKeyDygma::held(KeyAddr key_addr)
+{
+  return Runtime.device().isKeyswitchPressed(key_addr) || qukeys.hasQueuedReleaseFirst(key_addr);
+}
+
+void RepeatKeyDygma::own(uint8_t offset, Key out)
+{
+  out_[offset] = out;
+  owned_[offset >> 3] |= (1 << (offset & 7));
+}
+
+void RepeatKeyDygma::drop(uint8_t offset)
+{
+  out_[offset] = Key_NoKey;
+  owned_[offset >> 3] &= ~(1 << (offset & 7));
+}
+
+Key RepeatKeyDygma::cacheKey(uint8_t offset) const
+{
+  return out_[offset] == Key_NoKey ? Key(REPEAT_KEY) : out_[offset];
+}
+
+void RepeatKeyDygma::repair(KeyAddr key_addr, uint8_t key_state)
+{
+  if (!keyToggledOn(key_state) || (key_state & INJECTED) || keyRoleManager.isReplayingQueuedEvent() || !owns(key_addr)) {
+    return;
+  }
+
+  uint8_t offset = key_addr.toInt();
+
+  /* The earlier press's release still waits in the Qukeys queue, and its restore loop must keep holding what the host got */
+  if (qukeys.hasQueuedReleaseFirst(key_addr)) {
+    Layer.updateLiveCompositeKeymap(key_addr, cacheKey(offset));
+    return;
+  }
+
+  /* Retire an injected tap that never got its release */
+  drop(offset);
+}
+
+/* Send the resolved output in place of the Repeat key. An empty history sends nothing and leaves the inert Repeat key in the cache */
+EventHandlerResult RepeatKeyDygma::deliver(Key &mapped_key, KeyAddr key_addr, uint8_t offset)
+{
+  if (out_[offset] == Key_NoKey) {
+    return EventHandlerResult::EVENT_CONSUMED;
+  }
+
+  mapped_key = out_[offset];
+  Layer.updateLiveCompositeKeymap(key_addr, mapped_key);
+  return EventHandlerResult::OK;
+}
+
+EventHandlerResult RepeatKeyDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
+{
+  bool is_repeat = mapped_key.getRaw() == REPEAT_KEY;
+  EventHandlerResult unowned = is_repeat ? EventHandlerResult::EVENT_CONSUMED : EventHandlerResult::OK;
+
+  /* A macro step or OneShot.inject has no tracked address, so a Repeat key there does nothing */
+  if (!key_addr.isValid() || key_addr.toInt() >= MAX_TRACKED_KEYS) {
+    return unowned;
+  }
+
+  uint8_t offset = key_addr.toInt();
+  bool owned = owns(key_addr);
+
+  if (keyToggledOn(key_state)) {
+    if (!is_repeat) {
+      /* Another key replaced the output at this address */
+      if (owned) {
+        drop(offset);
+      }
+
+      return EventHandlerResult::OK;
+    }
+
+    /* A Superkeys timeline duplicate of a press still held keeps the output of its first delivery */
+    if (!((key_state & INJECTED) && owned && held(key_addr))) {
+      own(offset, ::AltRepeatTrack.repeatSource());
+    }
+
+    return deliver(mapped_key, key_addr, offset);
+  }
+
+  if (!owned) {
+    return unowned;
+  }
+
+  if (keyToggledOff(key_state)) {
+    /* Release what the press sent, even when history changed while it was held */
+    Key out = out_[offset];
+    drop(offset);
+
+    if (out == Key_NoKey) {
+      return EventHandlerResult::EVENT_CONSUMED;
+    }
+
+    mapped_key = out;
+    return EventHandlerResult::OK;
+  }
+
+  if (!is_repeat) {
+    return EventHandlerResult::OK;
+  }
+
+  if (out_[offset] == Key_NoKey) {
+    return EventHandlerResult::EVENT_CONSUMED;
+  }
+
+  mapped_key = out_[offset];
+  return EventHandlerResult::OK;
+}
+
+EventHandlerResult RepeatKeyDygma::onFocusEvent(const char *command)
+{
+  if (::Focus.handleHelp(command, "repeatkey.state")) {
+    return EventHandlerResult::OK;
+  }
+
+  if (strcmp_P(command, "repeatkey.state") != 0) {
+    return EventHandlerResult::OK;
+  }
+
+  /* Report only. Bazecor offers the Repeat key when help lists this command */
+  ::Focus.send(::AltRepeatTrack.repeatSource().getRaw());
+  return EventHandlerResult::EVENT_CONSUMED;
+}
+
 } // namespace plugin
 } // namespace kaleidoscope
 
 kaleidoscope::plugin::AltRepeatDygma AltRepeat;
 kaleidoscope::plugin::AltRepeatRepairDygma AltRepeatRepair;
 kaleidoscope::plugin::AltRepeatTrackDygma AltRepeatTrack;
+kaleidoscope::plugin::RepeatKeyDygma RepeatKey;

@@ -65,7 +65,7 @@ KALEIDOSCOPE_INIT_PLUGINS
     /*SwapHands precedes every key plugin. Its scanner router mirrors addresses before the core sees an event, and its hook turns SH_T
       codes into their tap key and consumes the other swap codes*/
     SwapHands,
-    /*AltRepeatRepair precedes Combos, which may buffer a re-press before AltRepeat sees it*/
+    /*AltRepeatRepair precedes Combos, which may buffer a re-press before AltRepeat and RepeatKey see it*/
     AltRepeatRepair,
     /*CapsWord trigger and Autoshift — must precede keyRoleManager so their own
       ranges are consumed before the Qukeys queue and the SuperKeys timeline see
@@ -80,6 +80,9 @@ KALEIDOSCOPE_INIT_PLUGINS
     AltRepeat,
     CapsWordTrigger, Autoshift,
     keyRoleManager,
+    /*RepeatKey follows keyRoleManager to resolve Qukeys replays, Superkey actions and timeline deliveries in logical order, and precedes
+      LayerHoldMods, KeyOverrides, OneShot, CapsWordShift and AltRepeatTrack so they see the repeated key*/
+    RepeatKey,
     /*Run after keyRoleManager to see resolved Qukeys replays and Superkeys
       deliveries, and strip the hold flag before KbdInterface matches exact raw values*/
     LayerHoldMods,
