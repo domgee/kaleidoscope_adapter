@@ -98,9 +98,9 @@ EventHandlerResult Qukeys::onKeyswitchEvent(Key& key, KeyAddr k, uint8_t key_sta
     return EventHandlerResult::OK;
   }
 
-  // If Qukeys is turned off, continue to next plugin.
+  /* With Qukeys off, give native DU cells their tap. Leave Superkeys to the Superkeys timeline, since generated combo outputs reach this path too */
   if (! active_) {
-    if (isDualUseKey(key)) {
+    if (decodeNativeDualUse(key, queue_head_.primary_key, queue_head_.alternate_key)) {
       key = queue_head_.primary_key;
     }
     return EventHandlerResult::OK;
@@ -580,49 +580,25 @@ bool Qukeys::isQukey(KeyAddr k) {
   return false;
 }
 
-// Specific test for DualUse keys (in-keymap qukeys); this is a separate
-// function because it gets called on its own when Qukeys is turned off. Like
-// isQukey(), it sets `queue_head_.*` as a side effect.
+/* Test for a dual-function Superkey or a native DualUse key in the keymap. Like isQukey(), set queue_head_ as a side effect */
 bool Qukeys::isDualUseKey(Key key) {
   return decodeDualUse(key, queue_head_.primary_key, queue_head_.alternate_key);
 }
 
-/* Superkey actions, read to rebuild the taps that DUM and DUL codes truncate */
-static const KeyRoleManager::keyrole_config_t *p_keyrole_config = nullptr;
-
-/* Return the first action of the Superkey a DUM or DUL code came from. The code keeps only 7 bits of the tap keycode, so taps such as macros
- * and many consumer keys come out wrong without this. Keep the fallback for an unknown Superkey or an entry that no longer encodes code_low */
-static Key superkeyTap(const KeyRoleManager::modified_keys_t *entry, uint8_t code_low, Key fallback)
-{
-  if (p_keyrole_config == nullptr) {
-    return fallback;
-  }
-
-  uint16_t idx = static_cast<uint16_t>(entry->sk_id - ranges::DYNAMIC_SUPER_FIRST);
-  if (idx >= sizeof(p_keyrole_config->superkeys) / sizeof(p_keyrole_config->superkeys[0])) {
-    return fallback;
-  }
-
-  Key tap = Superkey::getActionAsKey(&p_keyrole_config->superkeys[idx], 0);
-  uint8_t tap_low = static_cast<uint8_t>((tap.getFlags() != 0 ? 0x80 : 0x00) | (tap.getKeyCode() & 0x7F));
-  if (tap_low != code_low) {
-    return fallback;
-  }
-
-  return tap;
+/* Decode a dual-function Superkey or a native DualUse key into its tap and hold keys without touching queue_head_. Leave both outputs
+ * unchanged for any other key */
+bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
+  return keyRoleManager.dual_function_superkey(key, primary, alternate) || decodeNativeDualUse(key, primary, alternate);
 }
 
-/* Decode a DualUse key into its tap and hold keys without touching queue_head_. Leave both outputs unchanged for any other key */
-bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
+/* Decode a native DUM or DUL code into a tap without flags and a plain modifier or layer shift hold. Leave both outputs unchanged for any
+ * other key */
+bool Qukeys::decodeNativeDualUse(Key key, Key &primary, Key &alternate) {
   // Test for DualUse modifiers:
   if (key >= ranges::DUM_FIRST && key <= ranges::DUM_LAST) {
-
-    KeyRoleManager::modified_keys_t* action_flags = keyRoleManager.get_configured_qukeys(key.getRaw());
-    
     uint16_t offset = key.getRaw() - ranges::DUM_FIRST;
     uint8_t modifier_index = (offset >> 8) & 0xFF;  // Upper 8 bits = modifier index
     uint8_t keycode = offset & 0xFF;  // Lower 8 bits = keycode (+ flags offset)
-    uint8_t code_low = keycode;
     
     // If keycode >= 128, it means the tap has flags, extract only lower 7 bits
     if (keycode >= 128) {
@@ -657,21 +633,7 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
     }
     
     alternate = modifier_base;
-    
-    // If the user had some qukeys configured in the keymap action flags will return nullptr,
-    // this is because the already existitng qukeys are not stored in the configured keys array.
-    // In this case we will use the default flags, to keep the legacy qukey functionality.
-    if (action_flags != nullptr) 
-    {
-      primary.setFlags(action_flags->flags_action_1);
-      primary = superkeyTap(action_flags, code_low, primary);
-      alternate.setFlags(action_flags->flags_action_2);
-    }
-    else 
-    {
-      primary.setFlags(0);
-    }
-
+    primary.setFlags(0);
 
     return true;
   }
@@ -680,14 +642,11 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
     uint16_t raw_key = key.getRaw();
     //NRF_LOG_DEBUG("isDualUseKey: DUL key found, raw=0x%04X", raw_key);
     
-    KeyRoleManager::modified_keys_t* action_flags = keyRoleManager.get_configured_qukeys(raw_key);
-    
     uint16_t offset = raw_key - ranges::DUL_FIRST;
     int8_t layer = offset >> 8;  // Layer is in upper 8 bits
     
     // If offset >= 128 (in lower 8 bits), it means the tap has flags
     uint16_t keycode_offset = offset & 0xFF;
-    uint8_t code_low = static_cast<uint8_t>(keycode_offset);
     bool has_tap_flags = (keycode_offset >= 128);
     if (has_tap_flags) {
       keycode_offset = keycode_offset - 128;  // Remove the flags offset
@@ -697,16 +656,7 @@ bool Qukeys::decodeDualUse(Key key, Key &primary, Key &alternate) {
     //              offset, layer, keycode_offset, has_tap_flags);
     
     primary = Key(keycode_offset);
-
-    if (action_flags != nullptr) {
-      //NRF_LOG_DEBUG("  Using action flags: action1_flags=0x%02X, action2_flags=0x%02X",
-      //              action_flags->flags_action_1, action_flags->flags_action_2);
-      primary.setFlags(action_flags->flags_action_1);
-      primary = superkeyTap(action_flags, code_low, primary);
-    } else {
-      //NRF_LOG_DEBUG("  No action flags, using default flags");
-      primary.setFlags(0);
-    }
+    primary.setFlags(0);
 
     alternate = ShiftToLayer(layer);
     //NRF_LOG_DEBUG("  Set alternate key to layer %d", layer);
@@ -982,9 +932,8 @@ void Qukeys::grantSpeculation(KeyAddr k, uint8_t index)
   Key primary{Key_Transparent};
   Key alternate{Key_Transparent};
 
-  /* Never speculate on a layer hold or a SpaceCadet key */
-  if (key < ranges::DUM_FIRST || key > ranges::DUM_LAST || !decodeDualUse(key, primary, alternate) || plainModifierBits(alternate) == 0 ||
-      isModifierKey(primary)) {
+  /* Never speculate on a layer hold or a SpaceCadet key. plainModifierBits rejects layer holds */
+  if (!decodeDualUse(key, primary, alternate) || plainModifierBits(alternate) == 0 || isModifierKey(primary)) {
     return;
   }
 
@@ -1673,9 +1622,6 @@ EventHandlerResult Qukeys::onSetup()
   ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
 
   loadDualFunction();
-
-  result = kbdfal_ll_memory_item_request( KBDMEM_ITEM_TYPE_KEYROLE, (const void **)&p_keyrole_config );
-  ASSERT_DYGMA( result == RESULT_OK, "kbdfal_ll_memory_item_request failed" );
 
   return EventHandlerResult::OK;
 

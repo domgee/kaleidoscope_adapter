@@ -21,7 +21,6 @@
 
 #include <Kaleidoscope-FocusSerial.h>
 #include "kaleidoscope/layers.h"
-#include "kaleidoscope/plugin/KeyRoleManager.h"
 
 namespace kaleidoscope {
 namespace plugin {
@@ -94,12 +93,6 @@ void EEPROMKeymap::dumpKeymap(uint8_t layers, Key(*getkey)(uint8_t, KeyAddr)) {
   for (uint8_t layer = 0; layer < layers; layer++) {
     for (auto key_addr : KeyAddr::all()) {
       Key k = (*getkey)(layer, key_addr);
-      // Here we need to check in the KeyRolaManager if the key is a qukey. If it is, we need to send the superkey value instead.
-      
-      if (keyRoleManager.is_qukey(k)) 
-      {
-        keyRoleManager.get_superkey(&k);
-      }
 
       ::Focus.send(k);
     }
@@ -160,10 +153,8 @@ EventHandlerResult EEPROMKeymap::onFocusEvent(const char *command) {
       Key k;
 
       ::Focus.read(k);
-      
-      // Transform superkeys to qukeys if needed before storing
-      Key transformed_key = keyRoleManager.search_and_replace(k);
-      updateKey(i, transformed_key);
+
+      updateKey(i, k);
       i++;
     }
   }

@@ -419,6 +419,7 @@ class Qukeys : public kaleidoscope::Plugin {
   bool isQukey(KeyAddr k);
   bool isDualUseKey(Key key);
   static bool decodeDualUse(Key key, Key &primary, Key &alternate);
+  static bool decodeNativeDualUse(Key key, Key &primary, Key &alternate);
   bool isStackableQukeyAt(KeyAddr k) const;
   bool releaseDelayed(uint16_t overlap_start, uint16_t overlap_end) const;
   bool isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const;
