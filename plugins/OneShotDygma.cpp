@@ -159,8 +159,12 @@ EventHandlerResult OneShot::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, 
 
   if (keyIsPressed(keyState)) {
     prev_key_ = mapped_key;
-    if (!(mapped_key >= Key_LeftControl && mapped_key <= Key_RightGui) &&
-        !(mapped_key.getFlags() == (KEY_FLAGS | SYNTHETIC | SWITCH_TO_KEYMAP))) {
+
+    /* Keep a pending OneShot for any plain modifier, also one with modifier flags such as Ctrl+Shift as one key */
+    bool is_modifier = (mapped_key.getFlags() & (SYNTHETIC | RESERVED)) == 0 && mapped_key.getKeyCode() >= HID_KEYBOARD_FIRST_MODIFIER &&
+                       mapped_key.getKeyCode() <= HID_KEYBOARD_LAST_MODIFIER;
+
+    if (!is_modifier && !(mapped_key.getFlags() == (KEY_FLAGS | SYNTHETIC | SWITCH_TO_KEYMAP))) {
       should_cancel_ = true;
     }
   }

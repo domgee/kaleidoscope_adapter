@@ -259,7 +259,7 @@ bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
     return false;
   }
 
-  /* Qukeys plays a dual-function Superkey like a dual-use key, so the replay is its resolved tap or hold */
+  /* Treat a dual-function Superkey cell as dual-use, since Qukeys replays its resolved tap or hold */
   bool dual = (raw >= ranges::DU_FIRST && raw <= ranges::DU_LAST) || keyRoleManager.is_dual_function_superkey(cell);
 
   if (raw >= ranges::DYNAMIC_SUPER_FIRST && raw <= ranges::DYNAMIC_SUPER_LAST && !dual) {
