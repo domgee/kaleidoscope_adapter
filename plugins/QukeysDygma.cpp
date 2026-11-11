@@ -463,6 +463,12 @@ static bool isPrintable(Key key)
   return (key >= Key_A && key <= Key_0) || (key >= Key_Minus && key <= Key_Slash);
 }
 
+/* Count a Repeat output by its keycode when Shift is its only flag. Leave shortcuts uncounted, as shortcut cells are */
+static bool repeatPrintable(Key key)
+{
+  return (key.getFlags() & ~SHIFT_HELD) == 0 && isPrintable(Key(key.getKeyCode(), 0));
+}
+
 // Flush one event from the head of the queue, with the specified Key value.
 void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   // First we record the address and state of the event:
@@ -538,7 +544,7 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   flushing_queue_ = false;
 
   /* Count a press that resolved to the Repeat key, also as a rule output, by the key it sent */
-  if (press && ::RepeatKey.owns(queue_head_addr) && isPrintable(Layer.lookup(queue_head_addr))) {
+  if (press && ::RepeatKey.owns(queue_head_addr) && repeatPrintable(Layer.lookup(queue_head_addr))) {
     prior_keypress_timestamp_ = press_ts;
   }
 
@@ -1023,7 +1029,7 @@ void Qukeys::emitRetroPress()
   /* Release the key the press left in the live cache, which keeps a rewrite such as AltRepeat's */
   retro_release_key_ = Layer.lookup(retro_addr_);
 
-  if (isPrintable(retro_tap_) || (::RepeatKey.owns(retro_addr_) && isPrintable(retro_release_key_))) {
+  if (isPrintable(retro_tap_) || (::RepeatKey.owns(retro_addr_) && repeatPrintable(retro_release_key_))) {
     prior_keypress_timestamp_ = Runtime.millisAtCycleStart();
   }
 

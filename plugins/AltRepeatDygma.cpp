@@ -74,7 +74,7 @@ static uint8_t replayFlags(uint8_t mods)
   return flags;
 }
 
-/* The modifiers pressed so far in the report being built, as key flags with AltGr kept */
+/* Read the modifiers pressed so far in the report being built as key flags, with AltGr kept */
 static uint8_t reportModFlags()
 {
   static const struct {
@@ -120,7 +120,7 @@ void AltRepeatDygma::repairCache(KeyAddr key_addr, uint8_t key_state)
 
 EventHandlerResult AltRepeatRepairDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_addr, uint8_t key_state)
 {
-  /* RepeatKey goes last, so its output wins over a rule whose output is the Repeat key */
+  /* Run RepeatKey last, so its output wins over a rule whose output is the Repeat key */
   AltRepeat.repairCache(key_addr, key_state);
   ::RepeatKey.repair(key_addr, key_state);
   return EventHandlerResult::OK;
@@ -740,7 +740,7 @@ Key AltRepeatTrackDygma::repeatSource() const
     return repeat_;
   }
 
-  /* Two decisions in one cycle. Take the newest in logical order with the modifiers pressed so far in the report being built */
+  /* Take the newest pending key when two decisions fall in one cycle, with the modifiers pressed so far in the report being built */
   const Pending &newest = pending_[pending_len_ - 1];
   return Key(newest.keycode, (uint8_t)(newest.flags | reportModFlags()));
 }
@@ -819,7 +819,7 @@ bool RepeatKeyDygma::owns(KeyAddr key_addr) const
   return offset < MAX_TRACKED_KEYS && (owned_[offset >> 3] & (1 << (offset & 7)));
 }
 
-/* Still down, physically or as a release waiting in the Qukeys queue */
+/* Treat a press as held while it is down or its release waits in the Qukeys queue */
 bool RepeatKeyDygma::held(KeyAddr key_addr)
 {
   return Runtime.device().isKeyswitchPressed(key_addr) || qukeys.hasQueuedReleaseFirst(key_addr);
@@ -850,7 +850,7 @@ void RepeatKeyDygma::repair(KeyAddr key_addr, uint8_t key_state)
 
   uint8_t offset = key_addr.toInt();
 
-  /* The earlier press's release still waits in the Qukeys queue, and its restore loop must keep holding what the host got */
+  /* Put the output back while the earlier release waits in the Qukeys queue, so its restore loop holds what the host got */
   if (qukeys.hasQueuedReleaseFirst(key_addr)) {
     Layer.updateLiveCompositeKeymap(key_addr, cacheKey(offset));
     return;
@@ -860,7 +860,7 @@ void RepeatKeyDygma::repair(KeyAddr key_addr, uint8_t key_state)
   drop(offset);
 }
 
-/* Send the resolved output in place of the Repeat key. An empty history sends nothing and leaves the inert Repeat key in the cache */
+/* Send the resolved output in place of the Repeat key. Send nothing for an empty history and leave the inert Repeat key in the cache */
 EventHandlerResult RepeatKeyDygma::deliver(Key &mapped_key, KeyAddr key_addr, uint8_t offset)
 {
   if (out_[offset] == Key_NoKey) {
@@ -877,7 +877,7 @@ EventHandlerResult RepeatKeyDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
   bool is_repeat = mapped_key.getRaw() == REPEAT_KEY;
   EventHandlerResult unowned = is_repeat ? EventHandlerResult::EVENT_CONSUMED : EventHandlerResult::OK;
 
-  /* A macro step or OneShot.inject has no tracked address, so a Repeat key there does nothing */
+  /* Ignore a Repeat key without a tracked address, such as a macro step or OneShot.inject */
   if (!key_addr.isValid() || key_addr.toInt() >= MAX_TRACKED_KEYS) {
     return unowned;
   }
@@ -887,7 +887,7 @@ EventHandlerResult RepeatKeyDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
 
   if (keyToggledOn(key_state)) {
     if (!is_repeat) {
-      /* Another key replaced the output at this address */
+      /* Drop the output when another key replaces it at this address */
       if (owned) {
         drop(offset);
       }
@@ -895,7 +895,7 @@ EventHandlerResult RepeatKeyDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
       return EventHandlerResult::OK;
     }
 
-    /* A Superkeys timeline duplicate of a press still held keeps the output of its first delivery */
+    /* Keep the first output for a Superkeys timeline duplicate while its press is held */
     if (!((key_state & INJECTED) && owned && held(key_addr))) {
       own(offset, ::AltRepeatTrack.repeatSource());
     }
@@ -934,6 +934,7 @@ EventHandlerResult RepeatKeyDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key
 
 EventHandlerResult RepeatKeyDygma::onFocusEvent(const char *command)
 {
+  /* List the marker in help, so Bazecor offers the Repeat key */
   if (::Focus.handleHelp(command, "repeatkey.state")) {
     return EventHandlerResult::OK;
   }
@@ -942,7 +943,6 @@ EventHandlerResult RepeatKeyDygma::onFocusEvent(const char *command)
     return EventHandlerResult::OK;
   }
 
-  /* Report only. Bazecor offers the Repeat key when help lists this command */
   ::Focus.send(::AltRepeatTrack.repeatSource().getRaw());
   return EventHandlerResult::EVENT_CONSUMED;
 }
