@@ -17,6 +17,7 @@
 
 #include "kaleidoscope/keyswitch_state.h"
 #include "LEDControlDygma.h"
+#include "LEDCustomDygma.h"
 
 using namespace kaleidoscope::internal; // NOLINT(build/namespaces)
 
@@ -27,6 +28,7 @@ namespace plugin
 
 Key LEDControl::pending_next_prev_key_ = Key_NoKey;
 kbdapi_led_effect_action_t LEDControl::led_effect_action = KBDAPI_LED_EFFECT_ACTION_NONE;
+LEDControl::custom_handler_t LEDControl::custom_handler_ = nullptr;
 
 LEDControl::LEDControl(void)
 {
@@ -64,6 +66,29 @@ kbdapi_led_effect_action_t LEDControl::getCurrentAction(void)
     return led_effect_action;
 }
 
+void LEDControl::setCustomHandler(custom_handler_t handler)
+{
+    custom_handler_ = handler;
+}
+
+void LEDControl::custom_toggle(uint8_t slot)
+{
+    led_custom_t settings;
+
+    if (custom_handler_ == nullptr)
+    {
+        return;
+    }
+
+    /* Do nothing for an unused slot */
+    if (!LEDCustom.slotGet(slot, settings))
+    {
+        return;
+    }
+
+    custom_handler_(slot, settings);
+}
+
 kaleidoscope::EventHandlerResult LEDControl::onSetup()
 {
     return EventHandlerResult::OK;
@@ -84,6 +109,11 @@ kaleidoscope::EventHandlerResult LEDControl::onKeyswitchEvent(Key &mappedKey, Ke
         else if (mappedKey == Key_LEDToggle)
         {
             leds_toggle();
+        }
+        else if (mappedKey.getKeyCode() >= LED_CUSTOM_KEY_FIRST && mappedKey.getKeyCode() < LED_CUSTOM_KEY_FIRST + LED_CUSTOM_SLOT_COUNT)
+        {
+            /* Act on the press only, so a duplicate release can not toggle twice */
+            custom_toggle(mappedKey.getKeyCode() - LED_CUSTOM_KEY_FIRST);
         }
     }
 

@@ -31,6 +31,7 @@
 #include "KeyOverridesDygma.h"
 #include "LayerHoldModsDygma.h"
 #include "LEDControlDygma.h"
+#include "LEDCustomDygma.h"
 #include "MouseKeysDygma.h"
 #include "OneShotDygma.h"
 #include "SwapHandsDygma.h"
@@ -89,7 +90,10 @@ KALEIDOSCOPE_INIT_PLUGINS
     /*KeyOverrides follows LayerHoldMods to see resolved Qukeys replays, Superkeys deliveries and bare layer hold keys, and
       precedes OneShot, LEDControl, DynamicMacros and MouseKeys so it sees the keys they consume as other keys*/
     KeyOverrides,
-    LEDControl, KeyboardFocus, DynamicMacros,
+    LEDControl,
+    /*LEDCustom only loads the custom LED effect table and answers led.custom. LEDControl looks slots up in it*/
+    LEDCustom,
+    KeyboardFocus, DynamicMacros,
     /*SwapHandsOneShot judges SH_OS on the same resolved keys OneShot sees*/
     /*SideFlash,*/ Focus, MouseKeys, SwapHandsOneShot, OneShot, LayerFocus,
     HostPowerManagement,

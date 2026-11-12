@@ -21,12 +21,17 @@
 
 #include "kaleidoscope/Runtime.h"
 #include "kaleidoscope/plugin/LEDMode.h"
+#include "LEDEffect-Custom-Defy.h"
 
 #define LED_TOGGLE 0b00000001 // Synthetic, internal
 
 #define Key_LEDEffectNext Key(0, KEY_FLAGS | SYNTHETIC | IS_INTERNAL | LED_TOGGLE)
 #define Key_LEDEffectPrevious Key(1, KEY_FLAGS | SYNTHETIC | IS_INTERNAL | LED_TOGGLE)
 #define Key_LEDToggle Key(2, KEY_FLAGS | SYNTHETIC | IS_INTERNAL | LED_TOGGLE)
+
+/* Custom effect slots 0..LED_CUSTOM_SLOT_COUNT - 1 are 0x4303..0x4312 */
+#define LED_CUSTOM_KEY_FIRST 3
+#define Key_LEDCustom(n) Key(LED_CUSTOM_KEY_FIRST + (n), KEY_FLAGS | SYNTHETIC | IS_INTERNAL | LED_TOGGLE)
 
 namespace kaleidoscope
 {
@@ -46,14 +51,21 @@ class LEDControl : public kaleidoscope::Plugin
 
     static kbdapi_led_effect_action_t getCurrentAction(void);
 
+    typedef void (*custom_handler_t)(uint8_t slot, const led_custom_t &settings);
+
+    /* Set the function that turns a custom effect slot on or off */
+    static void setCustomHandler(custom_handler_t handler);
+
   private:
     static Key pending_next_prev_key_;
     static kbdapi_led_effect_action_t led_effect_action;
+    static custom_handler_t custom_handler_;
 
     static INLINE void next_mode(void);
     static INLINE void prev_mode(void);
     static INLINE void leds_toggle(void);
     static void hook_trigger( kbdapi_led_effect_action_t action );
+    static void custom_toggle(uint8_t slot);
 };
 
 } // namespace plugin
