@@ -29,6 +29,7 @@ namespace plugin
 Key LEDControl::pending_next_prev_key_ = Key_NoKey;
 kbdapi_led_effect_action_t LEDControl::led_effect_action = KBDAPI_LED_EFFECT_ACTION_NONE;
 LEDControl::custom_handler_t LEDControl::custom_handler_ = nullptr;
+uint8_t LEDControl::custom_down_[LEDControl::CUSTOM_TRACKED_KEYS / 8] = {0};
 
 LEDControl::LEDControl(void)
 {
@@ -89,6 +90,40 @@ void LEDControl::custom_toggle(uint8_t slot)
     custom_handler_(slot, settings);
 }
 
+/* Skip a Superkeys timeline delivery that repeats a slot press the address already made, as KeyOverrides does. The timeline injects it
+ * with INJECTED on the next cycle, also after a Qukeys replay or a combo. Address-less presses such as macros are never skipped */
+bool LEDControl::custom_press_duplicate(KeyAddr key_addr, uint8_t keyState)
+{
+    if (!key_addr.isValid() || key_addr.toInt() >= CUSTOM_TRACKED_KEYS)
+    {
+        return false;
+    }
+
+    uint8_t offset = key_addr.toInt();
+    uint8_t mask = (uint8_t)(1 << (offset % 8));
+
+    if ((keyState & INJECTED) && (custom_down_[offset / 8] & mask))
+    {
+        return true;
+    }
+
+    custom_down_[offset / 8] |= mask;
+
+    return false;
+}
+
+void LEDControl::custom_release(KeyAddr key_addr)
+{
+    if (!key_addr.isValid() || key_addr.toInt() >= CUSTOM_TRACKED_KEYS)
+    {
+        return;
+    }
+
+    uint8_t offset = key_addr.toInt();
+
+    custom_down_[offset / 8] &= (uint8_t)~(1 << (offset % 8));
+}
+
 kaleidoscope::EventHandlerResult LEDControl::onSetup()
 {
     return EventHandlerResult::OK;
@@ -96,6 +131,12 @@ kaleidoscope::EventHandlerResult LEDControl::onSetup()
 
 kaleidoscope::EventHandlerResult LEDControl::onKeyswitchEvent(Key &mappedKey, KeyAddr key_addr, uint8_t keyState)
 {
+    /* Clear the slot press at any release of the address, also when the live key there is no longer a slot key */
+    if (keyToggledOff(keyState))
+    {
+        custom_release(key_addr);
+    }
+
     if (mappedKey.getFlags() != (SYNTHETIC | IS_INTERNAL | LED_TOGGLE)) return kaleidoscope::EventHandlerResult::OK;
 
     if (keyToggledOn(keyState))
@@ -113,7 +154,10 @@ kaleidoscope::EventHandlerResult LEDControl::onKeyswitchEvent(Key &mappedKey, Ke
         else if (mappedKey.getKeyCode() >= LED_CUSTOM_KEY_FIRST && mappedKey.getKeyCode() < LED_CUSTOM_KEY_FIRST + LED_CUSTOM_SLOT_COUNT)
         {
             /* Act on the press only, so a duplicate release can not toggle twice */
-            custom_toggle(mappedKey.getKeyCode() - LED_CUSTOM_KEY_FIRST);
+            if (!custom_press_duplicate(key_addr, keyState))
+            {
+                custom_toggle(mappedKey.getKeyCode() - LED_CUSTOM_KEY_FIRST);
+            }
         }
     }
 

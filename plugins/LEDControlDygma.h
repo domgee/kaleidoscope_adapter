@@ -61,11 +61,17 @@ class LEDControl : public kaleidoscope::Plugin
     static kbdapi_led_effect_action_t led_effect_action;
     static custom_handler_t custom_handler_;
 
+    /* Addresses whose slot key press LEDControl took and whose release has not come yet */
+    static constexpr uint8_t CUSTOM_TRACKED_KEYS = 128;   /* largest Dygma matrix, as in CombosDygma */
+    static uint8_t custom_down_[CUSTOM_TRACKED_KEYS / 8];
+
     static INLINE void next_mode(void);
     static INLINE void prev_mode(void);
     static INLINE void leds_toggle(void);
     static void hook_trigger( kbdapi_led_effect_action_t action );
     static void custom_toggle(uint8_t slot);
+    static bool custom_press_duplicate(KeyAddr key_addr, uint8_t keyState);
+    static void custom_release(KeyAddr key_addr);
 };
 
 } // namespace plugin
