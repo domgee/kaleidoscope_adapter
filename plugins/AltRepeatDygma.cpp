@@ -319,7 +319,12 @@ bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
     return false;
   }
 
-  /* TapDance, Leader, Cycle, Syster, TopsyTurvy, Steno, SpaceCadet, Redial, Turbo and static macro codes. None of those plugins runs here */
+  /* Take the Repeat key, which reuses the Redial code, so a rule replaces it and RepeatKey resolves it otherwise */
+  if (raw == RepeatKeyDygma::REPEAT_KEY) {
+    return mapped_key == cell;
+  }
+
+  /* TapDance, Leader, Cycle, Syster, TopsyTurvy, Steno, SpaceCadet, Turbo and static macro codes. None of those plugins runs here */
   if (raw > ranges::DU_LAST && raw < ranges::DYNAMIC_MACRO_FIRST) {
     return false;
   }

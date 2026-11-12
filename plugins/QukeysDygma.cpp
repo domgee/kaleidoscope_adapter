@@ -543,8 +543,10 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   handleKeyswitchEvent(event_key, queue_head_addr, keyswitch_state);
   flushing_queue_ = false;
 
-  /* Count a press that resolved to the Repeat key, also as a rule output, by the key it sent */
-  if (press && ::RepeatKey.owns(queue_head_addr) && repeatPrintable(Layer.lookup(queue_head_addr))) {
+  /* Count a Repeat cell press and a press that resolved to the Repeat key by the key it sent, also when a rule replaced either */
+  bool repeat_cell = event_key.getRaw() == RepeatKeyDygma::REPEAT_KEY;
+
+  if (press && (repeat_cell || ::RepeatKey.owns(queue_head_addr)) && repeatPrintable(Layer.lookup(queue_head_addr))) {
     prior_keypress_timestamp_ = press_ts;
   }
 
