@@ -1031,7 +1031,10 @@ void Qukeys::emitRetroPress()
   /* Release the key the press left in the live cache, which keeps a rewrite such as AltRepeat's */
   retro_release_key_ = Layer.lookup(retro_addr_);
 
-  if (isPrintable(retro_tap_) || (::RepeatKey.owns(retro_addr_) && repeatPrintable(retro_release_key_))) {
+  /* Count a Repeat tap by the key it sent, also when a rule replaced it */
+  bool repeat_tap = retro_tap_.getRaw() == RepeatKeyDygma::REPEAT_KEY;
+
+  if (isPrintable(retro_tap_) || ((repeat_tap || ::RepeatKey.owns(retro_addr_)) && repeatPrintable(retro_release_key_))) {
     prior_keypress_timestamp_ = Runtime.millisAtCycleStart();
   }
 

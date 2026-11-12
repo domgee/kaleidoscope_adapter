@@ -299,7 +299,7 @@ const AltRepeatDygma::rule_t *AltRepeatDygma::findRule(uint8_t layer, uint8_t po
   return nullptr;
 }
 
-/* Return true when the replayed key is the cell's own press, or the resolved tap of a dual-function cell */
+/* Return true when the replayed key is the cell's own press, or the resolved tap of a dual-function cell, also when that tap is the Repeat key */
 bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
 {
   uint16_t raw = cell.getRaw();
@@ -330,6 +330,11 @@ bool AltRepeatDygma::replaysCell(Key mapped_key, Key cell)
   }
 
   if (dual) {
+    /* Take a Repeat tap, so a rule replaces it and RepeatKey resolves it otherwise */
+    if (mapped_key.getRaw() == RepeatKeyDygma::REPEAT_KEY) {
+      return true;
+    }
+
     uint8_t keycode = mapped_key.getKeyCode();
 
     return (mapped_key.getFlags() & (SYNTHETIC | RESERVED)) == 0 && keycode != 0 &&
