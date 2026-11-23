@@ -567,15 +567,12 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
     origin_prior_addr_ = KeyAddr();
   }
 
-  /* Let a timeline Superkey count its hold from the physical press */
-  bool superkey_origin = pinned_press && event_key.getRaw() >= ranges::DYNAMIC_SUPER_FIRST &&
-                         event_key.getRaw() <= ranges::DYNAMIC_SUPER_LAST;
-
   // Remove the head event from the queue:
   event_queue_.shift();
   forced_tap_mask_ >>= 1;
 
-  if (superkey_origin) {
+  /* Let a timeline Superkey count its hold from the physical press, also one that a plugin substitutes during the dispatch */
+  if (pinned_press) {
     SuperkeysHandler::setPressOrigin(queue_head_addr, origin_ms_, held_ms);
   }
 
@@ -584,7 +581,7 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   handleKeyswitchEvent(event_key, queue_head_addr, keyswitch_state);
   flushing_queue_ = false;
 
-  if (superkey_origin) {
+  if (pinned_press) {
     SuperkeysHandler::clearPressOrigin();
   }
 
