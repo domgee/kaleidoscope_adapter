@@ -100,6 +100,8 @@ EventHandlerResult Qukeys::onKeyswitchEvent(Key& key, KeyAddr k, uint8_t key_sta
 
   /* With Qukeys off, give native DU cells their tap. Leave Superkeys to the Superkeys timeline, since generated combo outputs reach this path too */
   if (! active_) {
+    dropPendingOrigin(k);
+
     if (decodeNativeDualUse(key, queue_head_.primary_key, queue_head_.alternate_key)) {
       key = queue_head_.primary_key;
     }
@@ -108,6 +110,11 @@ EventHandlerResult Qukeys::onKeyswitchEvent(Key& key, KeyAddr k, uint8_t key_sta
 
   // Deal with keyswitch state changes.
   if (keyToggledOn(key_state) || keyToggledOff(key_state)) {
+    /* Bind the replayed press to its origin, unless Combos made it a combo. Drop the origin when a release at k comes first */
+    if (origin_state_ == ORIGIN_PENDING && k == origin_addr_) {
+      origin_state_ = keyToggledOn(key_state) && !Combos.ownsAddress(k) ? ORIGIN_QUEUED : ORIGIN_NONE;
+    }
+
     // If the user rolled over from a non-modifier key to a qukey, let the
     // release event for that key skip the queue. This prevents unintended
     // repeat characters for the tapped key, which would otherwise have its
@@ -273,6 +280,8 @@ bool Qukeys::processQueue() {
     return true;
   }
 
+  applyHeadOrigin();
+
   // We now know that the first event is a key press. If it's not a qukey, or if
   // it's only there because the plugin was just turned off, we can flush it
   // immediately.
@@ -310,9 +319,11 @@ bool Qukeys::processQueue() {
 
   // If the qukey press is followed a printable key too closely, it's not
   // eligible to take on its alternate value unless it's a SpaceCadet-type key.
-  if (!Runtime.hasTimeExpired(prior_keypress_timestamp_,
-                              priorInterval(queue_head_addr)) &&
-      !qukey_is_spacecadet) {
+  /* Judge a replayed press by the eligibility captured at its physical press */
+  bool prior_tap = origin_state_ == ORIGIN_HEAD ? origin_prior_tap_ :
+                   !Runtime.hasTimeExpired(prior_keypress_timestamp_, priorInterval(queue_head_addr));
+
+  if (prior_tap && !qukey_is_spacecadet) {
     flushEvent(queue_head_.primary_key, true);
     return true;
   }
@@ -327,8 +338,10 @@ bool Qukeys::processQueue() {
   // should be flushed (and if so, in which of its two states). We start with
   // the second event in the queue (index 1).
   for (uint8_t i{1}; i < event_queue_.length(); ++i) {
-    /* Settle the head by its timeout when a queued event comes at or past its deadline. Only a per-key timeout lets that happen */
-    if (has_timeout_override_ && (uint16_t)(event_queue_.timestamp(i) - event_queue_.timestamp(0)) >= hold_timeout) {
+    /* Settle the head by its timeout when a queued event comes at or past its deadline. Only a per-key timeout or a replayed press
+     * whose physical press came earlier lets that happen */
+    if ((has_timeout_override_ || origin_state_ == ORIGIN_HEAD) &&
+        (uint16_t)(event_queue_.timestamp(i) - event_queue_.timestamp(0)) >= hold_timeout) {
       settleByTimeout();
       return true;
     }
@@ -345,7 +358,7 @@ bool Qukeys::processQueue() {
 
       /* Chordal Hold. Let a same-hand qukey stack, and make any other same-hand press a tap of the head and of the qukeys stacked on it */
       if (chordal && sameHandChord(queue_head_addr, i, hold_timeout)) {
-        if (isStackableQukeyAt(event_queue_.addr(i))) {
+        if (isStackableQukeyAt(i)) {
           continue;
         }
 
@@ -535,13 +548,45 @@ void Qukeys::flushEvent(Key event_key, bool quick_tap_arms, bool hold) {
   bool press = !event_queue_.isRelease(0);
   uint16_t press_ts = event_queue_.timestamp(0);
 
+  /* End the origin at its press. Measure the physical hold when its release is already queued */
+  bool pinned_press = press && origin_state_ == ORIGIN_HEAD && queue_head_addr == origin_addr_;
+  uint32_t held_ms = UINT32_MAX;
+
+  if (pinned_press) {
+    for (uint8_t i{1}; i < event_queue_.length(); ++i) {
+      if (event_queue_.addr(i) == origin_addr_) {
+        if (event_queue_.isRelease(i)) {
+          held_ms = widenTimestamp(event_queue_.timestamp(i)) - origin_ms_;
+        }
+
+        break;
+      }
+    }
+
+    origin_state_ = ORIGIN_NONE;
+    origin_prior_addr_ = KeyAddr();
+  }
+
+  /* Let a timeline Superkey count its hold from the physical press */
+  bool superkey_origin = pinned_press && event_key.getRaw() >= ranges::DYNAMIC_SUPER_FIRST &&
+                         event_key.getRaw() <= ranges::DYNAMIC_SUPER_LAST;
+
   // Remove the head event from the queue:
   event_queue_.shift();
   forced_tap_mask_ >>= 1;
+
+  if (superkey_origin) {
+    SuperkeysHandler::setPressOrigin(queue_head_addr, origin_ms_, held_ms);
+  }
+
   // This ensures that the flushed event will be ignored by the event handler hook:
   flushing_queue_ = true;
   handleKeyswitchEvent(event_key, queue_head_addr, keyswitch_state);
   flushing_queue_ = false;
+
+  if (superkey_origin) {
+    SuperkeysHandler::clearPressOrigin();
+  }
 
   /* Count a Repeat cell press and a press that resolved to the Repeat key by the key it sent, also when a rule replaced either */
   bool repeat_cell = event_key.getRaw() == RepeatKeyDygma::REPEAT_KEY;
@@ -569,7 +614,16 @@ bool Qukeys::isQukey(KeyAddr k) {
   // just looking up the cached value (i.e. `Layer.lookup(k)`), because the
   // cached value will be out of date if a layer change happened since the
   // keyswitch toggled on.
-  Key key = Layer.lookupOnActiveLayer(k);
+  /* Resolve a replayed press as its origin pins it */
+  bool pinned = origin_state_ == ORIGIN_HEAD && k == origin_addr_;
+  Key key{Key_NoKey};
+  uint8_t layer_index{0};
+
+  if (pinned) {
+    pinnedResolve(key, layer_index);
+  } else {
+    key = Layer.lookupOnActiveLayer(k);
+  }
 
   // Next, we check to see if this is a DualUse-type qukey (defined in the keymap)
   if (isDualUseKey(key)) {
@@ -577,7 +631,10 @@ bool Qukeys::isQukey(KeyAddr k) {
   }
 
   // Last, we check the qukeys array for a match
-  uint8_t layer_index = Layer.lookupActiveLayer(k);
+  if (!pinned) {
+    layer_index = Layer.lookupActiveLayer(k);
+  }
+
   for (uint8_t i{0}; i < qukeys_count_; ++i) {
     Qukey qukey = cloneFromProgmem(qukeys_[i]);
     if (qukey.addr == k) {
@@ -728,7 +785,8 @@ void Qukeys::notePhysicalPress(KeyAddr k)
 
   if (k == last_press_addr_ && !Combos.ownsAddress(k)) {
     latch_addr_ = k;
-    latch_ms_ = Runtime.millisAtCycleStart();
+    /* Latch a replayed press at its physical time, which its queue head timestamp carries too */
+    latch_ms_ = origin_state_ == ORIGIN_PENDING && k == origin_addr_ ? origin_ms_ : now;
   } else if (k == latch_addr_) {
     /* Drop a latch whose press never reached the queue, such as a combo member */
     latch_addr_ = KeyAddr();
@@ -904,17 +962,28 @@ void Qukeys::settleSameHandTaps(KeyAddr head, uint8_t end, uint16_t term)
   for (uint8_t j{1}; j < end; ++j) {
     KeyAddr k = event_queue_.addr(j);
 
-    if (event_queue_.isPress(j) && sameHandChord(head, j, term) && isStackableQukeyAt(k) && chordalFor(k) &&
+    if (event_queue_.isPress(j) && sameHandChord(head, j, term) && isStackableQukeyAt(j) && chordalFor(k) &&
         (uint16_t)(event_queue_.timestamp(end) - event_queue_.timestamp(j)) < holdTimeout(k)) {
       forced_tap_mask_ |= (uint8_t)(1u << j);
     }
   }
 }
 
-/* Return true when the key at k is a qukey whose tap is not a modifier. Leave queue_head_ untouched, since the head's values stay in use */
-bool Qukeys::isStackableQukeyAt(KeyAddr k) const
+/* Return true when the queued press at index is a qukey whose tap is not a modifier. Leave queue_head_ untouched, since the head's values
+ * stay in use */
+bool Qukeys::isStackableQukeyAt(uint8_t index) const
 {
-  Key key = Layer.lookupOnActiveLayer(k);
+  KeyAddr k = event_queue_.addr(index);
+  bool pinned = pinnedAt(index);
+  Key key{Key_NoKey};
+  uint8_t layer_index{0};
+
+  if (pinned) {
+    pinnedResolve(key, layer_index);
+  } else {
+    key = Layer.lookupOnActiveLayer(k);
+  }
+
   Key primary{Key_Transparent};
   Key alternate{Key_Transparent};
 
@@ -922,7 +991,9 @@ bool Qukeys::isStackableQukeyAt(KeyAddr k) const
     return !isModifierKey(primary);
   }
 
-  uint8_t layer_index = Layer.lookupActiveLayer(k);
+  if (!pinned) {
+    layer_index = Layer.lookupActiveLayer(k);
+  }
 
   for (uint8_t i{0}; i < qukeys_count_; ++i) {
     Qukey qukey = cloneFromProgmem(qukeys_[i]);
@@ -935,6 +1006,79 @@ bool Qukeys::isStackableQukeyAt(KeyAddr k) const
   return false;
 }
 
+/* Return true when the press at index is the replayed press an origin is bound to */
+bool Qukeys::pinnedAt(uint8_t index) const
+{
+  return (origin_state_ == ORIGIN_QUEUED || origin_state_ == ORIGIN_HEAD) && index < event_queue_.length() &&
+         event_queue_.addr(index) == origin_addr_ && event_queue_.isPress(index) && !isKeyAddrInQueueBeforeIndex(origin_addr_, index);
+}
+
+/* Play what a native press would play while the origin layer is on, so a layer above it still wins. Otherwise play the pinned key */
+void Qukeys::pinnedResolve(Key &key, uint8_t &layer) const
+{
+  if (origin_live_ && Layer.isActive(origin_layer_)) {
+    key = Layer.lookupOnActiveLayer(origin_addr_);
+    layer = Layer.lookupActiveLayer(origin_addr_);
+    return;
+  }
+
+  key = origin_key_;
+  layer = origin_layer_;
+}
+
+/* Return the key the queued press at index resolves to */
+Key Qukeys::queuedKeyAt(uint8_t index) const
+{
+  if (pinnedAt(index)) {
+    Key key{Key_NoKey};
+    uint8_t layer{0};
+
+    pinnedResolve(key, layer);
+    return key;
+  }
+
+  return Layer.lookupOnActiveLayer(event_queue_.addr(index));
+}
+
+/* Give a replayed press at the queue head its physical press time, so every hold decision counts from it */
+void Qukeys::applyHeadOrigin()
+{
+  if (origin_state_ != ORIGIN_QUEUED || !pinnedAt(0)) {
+    return;
+  }
+
+  event_queue_.setTimestamp(0, (uint16_t)origin_ms_);
+  origin_state_ = ORIGIN_HEAD;
+}
+
+void Qukeys::capturePriorEligibility(KeyAddr k)
+{
+  origin_prior_addr_ = k;
+  origin_prior_tap_ = !Runtime.hasTimeExpired(prior_keypress_timestamp_, priorInterval(k));
+}
+
+void Qukeys::setPressOrigin(KeyAddr k, uint32_t ms, Key key, uint8_t layer, bool live)
+{
+  if (k != origin_prior_addr_) {
+    origin_prior_addr_ = KeyAddr();
+    origin_prior_tap_ = false;
+  }
+
+  origin_state_ = ORIGIN_PENDING;
+  origin_addr_ = k;
+  origin_ms_ = ms;
+  origin_key_ = key;
+  origin_layer_ = layer;
+  origin_live_ = live;
+}
+
+void Qukeys::dropPendingOrigin(KeyAddr k)
+{
+  if (origin_state_ == ORIGIN_PENDING && k == origin_addr_) {
+    origin_state_ = ORIGIN_NONE;
+  }
+}
+
 /* Press the hold modifier of a mod-tap qukey at once while it is undecided. Grant it only behind speculated entries, so the
  * speculated entries stay a prefix of the queue */
 void Qukeys::grantSpeculation(KeyAddr k, uint8_t index)
@@ -944,7 +1088,7 @@ void Qukeys::grantSpeculation(KeyAddr k, uint8_t index)
     return;
   }
 
-  Key key = Layer.lookupOnActiveLayer(k);
+  Key key = queuedKeyAt(index);
   Key primary{Key_Transparent};
   Key alternate{Key_Transparent};
 

@@ -297,6 +297,27 @@ class Qukeys : public kaleidoscope::Plugin {
   /* Note a genuine physical key press. Call it from CombosDygma for every one, before any plugin can consume it */
   void notePhysicalPress(KeyAddr k);
 
+  /* Return true when any queued event is a press */
+  bool hasQueuedPress() const {
+    for (uint8_t i{0}; i < event_queue_.length(); ++i) {
+      if (event_queue_.isPress(i)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /* Record at a held-back physical press at k whether the prior interval makes it a tap, as the queue head test would now */
+  void capturePriorEligibility(KeyAddr k);
+
+  /* Bind the next press replayed at k to its physical press time ms and to key on layer. Live resolves on the active layers at the queue
+   * head while layer is active. Call it right before the replay */
+  void setPressOrigin(KeyAddr k, uint32_t ms, Key key, uint8_t layer, bool live);
+
+  /* Forget an origin at k whose press never reached the queue */
+  void dropPendingOrigin(KeyAddr k);
+
   // Kaleidoscope hook functions.
   EventHandlerResult onKeyswitchEvent(Key &mapped_key,
                                       KeyAddr key_addr,
@@ -386,6 +407,19 @@ class Qukeys : public kaleidoscope::Plugin {
   /* Queue entries Chordal Hold settled as taps, bit i for index i */
   uint8_t forced_tap_mask_{0};
 
+  /* Press origin. PENDING until the replayed press is queued, QUEUED until it reaches the head, HEAD until it is flushed */
+  enum : uint8_t { ORIGIN_NONE, ORIGIN_PENDING, ORIGIN_QUEUED, ORIGIN_HEAD };
+  uint8_t origin_state_{ORIGIN_NONE};
+  KeyAddr origin_addr_;
+  uint32_t origin_ms_{0};
+  Key origin_key_{Key_NoKey};
+  uint8_t origin_layer_{0};
+  bool origin_live_{false};
+
+  /* Prior interval eligibility captured at the physical press of origin_prior_addr_ */
+  KeyAddr origin_prior_addr_;
+  bool origin_prior_tap_{false};
+
   /* Speculative Hold. Queue entries [0, spec_count_) are undecided qukeys whose hold modifier spec_key_[i] is pressed early.
    * The first spec_reported_ of them went out in a report */
   uint8_t spec_count_{0};
@@ -420,7 +454,11 @@ class Qukeys : public kaleidoscope::Plugin {
   bool isDualUseKey(Key key);
   static bool decodeDualUse(Key key, Key &primary, Key &alternate);
   static bool decodeNativeDualUse(Key key, Key &primary, Key &alternate);
-  bool isStackableQukeyAt(KeyAddr k) const;
+  bool isStackableQukeyAt(uint8_t index) const;
+  bool pinnedAt(uint8_t index) const;
+  void pinnedResolve(Key &key, uint8_t &layer) const;
+  Key queuedKeyAt(uint8_t index) const;
+  void applyHeadOrigin();
   bool releaseDelayed(uint16_t overlap_start, uint16_t overlap_end) const;
   bool isKeyAddrInQueueBeforeIndex(KeyAddr k, uint8_t index) const;
   bool quickTapDue(KeyAddr k);
