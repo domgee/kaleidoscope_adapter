@@ -115,6 +115,12 @@ class CombosDygma : public kaleidoscope::Plugin {
    * It covers the held combo's anchor and the Qukeys replay of an ended combo's action */
   uint8_t layerAt(KeyAddr key_addr) const;
 
+  /* Return true while members are buffered, waiting for a match or the window's end */
+  bool isCollecting() const { return state_ == State::COLLECTING; }
+
+  /* Return true while this plugin re-emits a buffered press or a combo's action */
+  bool isReemitting() const { return flushing_; }
+
  private:
   enum class State : uint8_t {
     IDLE,        /* nothing buffered                                   */

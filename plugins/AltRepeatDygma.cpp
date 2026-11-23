@@ -280,6 +280,24 @@ bool AltRepeatDygma::canReplace(Key mapped_key, KeyAddr key_addr) const
   return replaysCell(mapped_key, Layer.lookupOnActiveLayer(key_addr));
 }
 
+bool AltRepeatDygma::hasRulesAt(KeyAddr key_addr) const
+{
+  if (!configValid() || !key_addr.isValid()) {
+    return false;
+  }
+
+  uint8_t layer = Layer.lookupActiveLayer(key_addr);
+  uint8_t position = key_addr.toInt();
+
+  for (uint8_t i = 0; i < p_config_->rules_count; ++i) {
+    if (p_config_->rules[i].layer == layer && p_config_->rules[i].position == position) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 const AltRepeatDygma::rule_t *AltRepeatDygma::findRule(uint8_t layer, uint8_t position) const
 {
   uint16_t previous = AltRepeatTrack.decisionPrevious();

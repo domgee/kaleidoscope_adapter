@@ -24,6 +24,7 @@
 #include "CapsWordDygma.h"
 #include "CombosDygma.h"
 #include "ConditionalLayersDygma.h"
+#include "DominantLayerDygma.h"
 #include "DynamicMacrosDygma.h"
 #include "EEPROMKeymapDygma.h"
 #include "kbdfal_ll_base.h"
@@ -68,6 +69,8 @@ KALEIDOSCOPE_INIT_PLUGINS
     SwapHands,
     /*AltRepeatRepair precedes Combos, which may buffer a re-press before AltRepeat and RepeatKey see it*/
     AltRepeatRepair,
+    /*DominantLayer holds a key with a dominant layer back before Combos, Qukeys and Superkeys see it, and replays it once*/
+    DominantLayer,
     /*CapsWord trigger and Autoshift — must precede keyRoleManager so their own
       ranges are consumed before the Qukeys queue and the SuperKeys timeline see
       them. That keeps them out of both delay stages and of the timeline's

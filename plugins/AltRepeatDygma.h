@@ -62,6 +62,9 @@ class AltRepeatDygma : public kaleidoscope::Plugin {
    * replaced it since */
   bool ruleOutputAt(KeyAddr key_addr, Key key, uint8_t layer) const;
 
+  /* Return true when any rule sits at this address on its active layer, whatever its previous key */
+  bool hasRulesAt(KeyAddr key_addr) const;
+
   /* End the repeat when a key from another address types. AltRepeatTrack calls it for each key that updates history */
   void keyTyped(KeyAddr key_addr);
 

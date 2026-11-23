@@ -45,6 +45,7 @@ extern "C" {
         KBDMEM_ITEM_TYPE_HOLDMODS,
         KBDMEM_ITEM_TYPE_KEYMAP_FORMAT,
         KBDMEM_ITEM_TYPE_LEDCUSTOM,
+        KBDMEM_ITEM_TYPE_DOMINANT,
     } kbdmem_item_type_t;
 
 #ifdef __cplusplus

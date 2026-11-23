@@ -17,6 +17,7 @@
  */
 
 #include "EEPROMKeymapDygma.h"
+#include "DominantLayerDygma.h"
 #include "kbdfal_ll_memory.h"
 
 #include <Kaleidoscope-FocusSerial.h>
@@ -105,6 +106,11 @@ EventHandlerResult EEPROMKeymap::onFocusEvent(const char *command) {
 
   if (strncmp_P(command, PSTR("keymap."), 7) != 0)
     return EventHandlerResult::OK;
+
+  /* Replay a key waiting for its dominant layer before a write changes a cell or the keymap provider. DominantLayer never sees keymap.* */
+  if (!::Focus.isEOL()) {
+    ::DominantLayer.settle();
+  }
 
   if (strcmp_P(command + 7, PSTR("onlyCustom")) == 0) {
     if (::Focus.isEOL()) {
