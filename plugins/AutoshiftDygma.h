@@ -60,6 +60,9 @@ class AutoshiftDygma : public kaleidoscope::Plugin {
   EventHandlerResult onFocusEvent(const char *command);
   EventHandlerResult onSetup();
 
+  /* Return true while a key waits for its tap or hold decision */
+  bool hasPendingKey() const { return state_ == State::WAITING; }
+
   /* Only keys with a distinct shifted form are eligible: letters, digits and
    * punctuation. Modifiers, F-keys, navigation and every SYNTHETIC/RESERVED
    * code (layers, macros, LED, mouse, overlay) are rejected. */

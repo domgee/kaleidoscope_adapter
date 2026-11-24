@@ -19,6 +19,7 @@
 #include "kbdfal_ll_memory.h"
 
 #include "AltRepeatDygma.h"
+#include "AutoshiftDygma.h"
 #include "CombosDygma.h"
 #include "ConditionalLayersDygma.h"
 #include "DynamicMacrosDygma.h"
@@ -93,7 +94,7 @@ uint16_t DominantLayerDygma::timeoutMs() const
 
 uint8_t DominantLayerDygma::layerOf(uint8_t position) const
 {
-  if (!configValid() || position >= POSITIONS) {
+  if (!configValid() || position >= POSITIONS || (position >= GAP_FIRST && position <= GAP_LAST)) {
     return NO_LAYER;
   }
 
@@ -160,16 +161,20 @@ bool DominantLayerDygma::canArm(KeyAddr key_addr) const
     return false;
   }
 
-  if (Layer.getKey(layer, key_addr) == Key_Transparent || changesLayer(Layer.lookupOnActiveLayer(key_addr))) {
+  /* A replayed swap control never enables swap */
+  Key cell = Layer.getKey(layer, key_addr);
+
+  if (cell == Key_Transparent || SwapHandsDygma::isSwapCode(cell.getRaw()) || changesLayer(Layer.lookupOnActiveLayer(key_addr))) {
     return false;
   }
 
-  /* Leave the key to an undecided Qukeys or Superkeys entry, and never let a second press take the single Qukeys origin slot */
-  if (qukeys.hasPendingQukey() || qukeys.hasQueuedPress() || qukeys.hasQueuedEvent(key_addr)) {
+  /* Require an empty Qukeys queue, because a queued release can change the layers before a predicted layer key resolves */
+  if (qukeys.hasPendingQukey() || qukeys.hasQueuedEvents()) {
     return false;
   }
 
-  return !SuperkeysHandler::hasPendingSuperkey() && !::Combos.isCollecting();
+  /* Leave a pending Autoshift key to settle as a tap at this physical press */
+  return !SuperkeysHandler::hasPendingSuperkey() && !::Combos.isCollecting() && !::Autoshift.hasPendingKey();
 }
 
 /* Return true when the layer key at key_addr turns the dominant layer on at its press */

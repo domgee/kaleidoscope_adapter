@@ -297,6 +297,11 @@ class Qukeys : public kaleidoscope::Plugin {
   /* Note a genuine physical key press. Call it from CombosDygma for every one, before any plugin can consume it */
   void notePhysicalPress(KeyAddr k);
 
+  /* Return true when the queue holds any event, a release included */
+  bool hasQueuedEvents() const {
+    return !event_queue_.isEmpty();
+  }
+
   /* Return true when any queued event is a press */
   bool hasQueuedPress() const {
     for (uint8_t i{0}; i < event_queue_.length(); ++i) {
