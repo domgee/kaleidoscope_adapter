@@ -16,6 +16,7 @@
  */
 
 #include "CombosDygma.h"
+#include "DominantLayerDygma.h"
 #include "kbdfal_ll_memory.h"
 
 #include "DynamicMacrosDygma.h"
@@ -610,7 +611,12 @@ EventHandlerResult CombosDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr key_ad
   if (keyToggledOn(key_state) && !keyRoleManager.isReplayingQueuedEvent())
   {
     qukeys.notePhysicalPress(key_addr);
-    ::DynamicMacros.notePhysicalPress(key_addr);
+
+    /* A second call would drop the stop token DominantLayer's hold-back left at the address */
+    if (!::DominantLayer.isReplayingHeldPress())
+    {
+      ::DynamicMacros.notePhysicalPress(key_addr);
+    }
   }
 
   if (p_combos_config == nullptr) return EventHandlerResult::OK;

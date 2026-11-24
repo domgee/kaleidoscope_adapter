@@ -268,12 +268,10 @@ void DominantLayerDygma::resolve(Kind kind)
   bool dominant = kind == Kind::DOMINANT;
   Key pin = dominant ? Layer.getKey(layer_, addr_) : k0_;
 
-  /* Play nothing for an empty cell, because a replay of Key_NoKey would resolve the address again. Still count the press for quick tap
-   * and the macro stop */
+  /* Play nothing for an empty cell, because a replay of Key_NoKey would resolve the address again. Still count the press for quick tap */
   if (pin == Key_NoKey || pin == Key_Transparent) {
     Layer.updateLiveCompositeKeymap(addr_, Key_NoKey);
     qukeys.notePhysicalPress(addr_);
-    ::DynamicMacros.notePhysicalPress(addr_);
     flagSet(silenced_, addr_, true);
     return;
   }
@@ -281,7 +279,9 @@ void DominantLayerDygma::resolve(Kind kind)
   qukeys.setPressOrigin(addr_, press_ms_, pin, dominant ? layer_ : 0, dominant);
 
   emitting_ = true;
+  replaying_ = true;
   handleKeyswitchEvent(pin, addr_, IS_PRESSED);
+  replaying_ = false;
   emitting_ = false;
 }
 
@@ -357,6 +357,9 @@ EventHandlerResult DominantLayerDygma::onKeyswitchEvent(Key &mapped_key, KeyAddr
     /* Keep holds and a release from resolving to the key while it waits */
     Layer.updateLiveCompositeKeymap(key_addr, Key_NoKey);
     qukeys.capturePriorEligibility(key_addr);
+
+    /* Stop an other-keys macro at the physical press, not at the replay */
+    ::DynamicMacros.notePhysicalPress(key_addr);
 
     kbdtimer_set_ms(&timer_, timeoutMs());
     state_ = State::WAITING;

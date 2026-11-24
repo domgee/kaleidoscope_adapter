@@ -54,6 +54,9 @@ class DominantLayerDygma : public kaleidoscope::Plugin {
   /* Replay a waiting key on layer 0 now. EEPROMKeymap calls it before a keymap write */
   void settle();
 
+  /* Return true while the held-back press is replayed. DynamicMacros saw its physical press at the hold-back already */
+  bool isReplayingHeldPress() const { return replaying_; }
+
  private:
   /* Positions 52..55 have no key */
   static constexpr uint8_t GAP_FIRST   = 52;
@@ -81,6 +84,9 @@ class DominantLayerDygma : public kaleidoscope::Plugin {
 
   /* Set while this plugin re-emits a press, so its own hook lets it through */
   bool emitting_ = false;
+
+  /* Set while the held-back press is replayed */
+  bool replaying_ = false;
 
   /* Per position until its physical release. passed_ marks a press already let through, silenced_ a press that plays nothing */
   uint8_t passed_[POSITIONS / 8 + 1] = {0};
